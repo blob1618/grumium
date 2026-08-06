@@ -267,7 +267,7 @@ class TestReminderServiceCrud:
 
         session = TestSession()
         owner = _seed_user(session, "5491155551111")
-        other = _seed_user(session, "5491155552222")
+        _seed_user(session, "5491155552222")
         reminder = _seed_reminder(session, owner, titulo="Luz", dia_del_mes=10)
         session.close()
 

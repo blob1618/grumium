@@ -472,7 +472,7 @@ class ReminderService:
             if found is None:
                 return None, cls._result(
                     "not_found",
-                    f"No encontré un recordatorio con ese nombre.",
+                    "No encontré un recordatorio con ese nombre.",
                 )
 
             # Expunge para que el caller pueda usar el objeto fuera de la sesión

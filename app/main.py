@@ -24,6 +24,7 @@ from app.services.reminder import ReminderListResult, ReminderResult, ReminderSe
 from app.services.conversation import (  # noqa: E402
     ConversationService,
     LastRegisteredMovement,
+    PendingMovement,
 )
 
 # Cliente Redis global
@@ -120,6 +121,13 @@ def _registered_reply(extracted_data: dict) -> str:
 def _category_hint_reply() -> str:
     return (
         "¿No estás de acuerdo con la categoría? Indicame y lo cambiamos."
+    )
+
+
+def _category_confirmation_reply(category_name: str) -> str:
+    return (
+        f"📁 Detecté la categoría *{category_name}*. "
+        "¿Confirmás que es correcta? Respondé 'sí' para confirmar o decime la categoría correcta."
     )
 
 
