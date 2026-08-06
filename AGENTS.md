@@ -1,70 +1,83 @@
 # Instrucciones para agentes de IA — Luka
 
-Bienvenido al proyecto Luka. Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los usuarios a gestionar sus finanzas a través de lenguaje natural.
+Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los usuarios a gestionar sus finanzas a través de lenguaje natural.
 
 ## Arquitectura y stack
 
-- **Framework**: FastAPI (arquitectura async)
-- **IA/LLM**: Google Gemini (transforma lenguaje natural en datos financieros estructurados)
-- **Mensajería**: Meta WhatsApp Business API
-- **Base de datos**: SQLAlchemy (SQLite para desarrollo local, PostgreSQL/Supabase en producción)
-- **Tareas en segundo plano**: APScheduler (gestiona recordatorios y jobs en background)
-- **Deploy**: Contenedor Docker desplegado en Render
+- **Framework**: FastAPI (async). Python 3.11.
+- **LLM**: fachada en `app/services/llm.py` -> `app/services/llm_providers/` (implementaciones `gemini` y `mistral`, selección por env `LLM_PROVIDER`, default `gemini`). La respuesta normalizada del proveedor se define en `prompt.md`, no en código.
+- **Mensajería**: Meta WhatsApp Business API.
+- **Base de datos**: SQLAlchemy (SQLite local, PostgreSQL/Supabase en producción).
+- **Estado de conversación y caché**: Redis (`app/services/conversation.py`).
+- **Tareas en segundo plano**: APScheduler (`app/scheduler.py`).
+- **Deploy**: Docker + Render.
 
 ## Organización del código
 
-- `app/main.py`: Entrypoint de la aplicación, verificación del webhook y capa de ingesta de mensajes (`/webhook`).
-- `app/api/whatsapp.py`: Cliente de salida para la API de WhatsApp.
-- `app/services/llm.py`: Interacción con el proveedor LLM para interpretar mensajes y normalizar movimientos financieros desde texto en lenguaje natural.
-- `app/services/finance.py`: Lógica de negocio central para validar y persistir ingresos y egresos, además de otros helpers financieros.
-- `app/models/`: Modelos de base de datos (SQLAlchemy) y esquemas (`database.py`).
-- `app/scheduler.py`: Procesos en segundo plano como recordatorios financieros periódicos.
+- `app/main.py`: entrypoint y webhook. **Nota: hoy es un archivo grande (~900 líneas) que todavía contiene bastante lógica de reply y de dispatcher; el ideal del repo es mover esa lógica a los services, no agregar más inline.**
+- `app/api/whatsapp.py`: único cliente saliente de WhatsApp. Normaliza teléfonos argentinos `549...` -> `54...`.
+- `app/services/llm.py` + `app/services/llm_providers/`: fachada LLM y providers. `LLMService` es singleton por clase (usar `reset_provider()` y `set_prompt_path()` en tests).
+- `app/services/finance.py`: validación y persistencia de movimientos y categorías.
+- `app/services/onboarding.py`: alta/vinculación de usuarios e invitaciones.
+- `app/services/reminder.py`: recordatorios (CRUD, título único, multi-turno).
+- `app/services/conversation.py`: estado multi-turno en Redis (confirmación de categoría, recordatorio pendiente, rename).
+- `app/models/database.py`: engine, sesión y todos los modelos SQLAlchemy (un solo archivo).
+- `app/scheduler.py`: jobs en background (recordatorios cada 5 min).
 
 ## Guías de ingeniería
 
-### 1. Cambios de archivos
-- Las rutas de FastAPI van en `app/main.py`.
-- La lógica compleja no va en los controllers: el parseo va en `app/services/llm.py` y los cambios de estado en `app/services/finance.py`.
-- Actualizar las definiciones de SQLAlchemy en `app/models/` cuando se altere la estructura de la base de datos y asegurar sesiones async correctas.
+- Las rutas de FastAPI van en `app/main.py`; la lógica compleja va en los services (parseo en LLM, cambios de estado en finance/reminder). No persistir nuevas dependencias en `app/main.py`.
+- Todo mensaje saliente de WhatsApp pasa por `app/api/whatsapp.py`.
+- Toda lógica basada en tiempo/notificaciones se orquesta desde `app/scheduler.py`.
+- Los modelos/estructura de BD se actualizan en `app/models/database.py` (un solo archivo) con sesiones async correctas.
 
-### 2. Interacción con servicios
-- Todos los mensajes salientes de WhatsApp deben pasar por `app/api/whatsapp.py`.
-- Cualquier feature NLP/LLM externa debe integrarse a través del wrapper de `app/services/llm.py` para mantener modularidad.
+### Contrato DB MVP / Release 1
+- `public.movimientos_financieros` es la entidad central para ingresos y egresos; `public.usuario` es la tabla oficial de usuarios, mapeada por `public.usuario.whatsapp_id`.
+- No ejecutar SQL ni tocar Supabase directamente; todo cambio de schema se versiona primero (ver `docs/database.md` y `database/migrations/`).
+- `public.movimientos_financieros` tiene RLS habilitado; no asumir policies de acceso público (roles `anon`/`authenticated`). No hay frontend -> Supabase directo salvo nueva ADR.
 
-### 3. Datos y persistencia
-- Usar el ORM SQLAlchemy para interactuar con la base de datos.
-- Mantener compatibilidad con SQLite local y PostgreSQL/Supabase en producción.
-- Para Release 1, el acceso a datos financieros debe ser mediado por backend. No implementar frontend -> Supabase directo para `movimientos_financieros` salvo nueva ADR.
-- `public.movimientos_financieros` tiene RLS habilitado; no asumir que existen policies para acceso público desde roles `anon` o `authenticated`.
+### Invariantes del registro por texto
+- Flujo: WhatsApp webhook -> `LLMService` -> `FinanceService` -> `public.movimientos_financieros` -> respuesta.
+- `intent="expense"` se conserva por compatibilidad; `movement_type` define `ingreso`/`egreso`.
+- Confirmar el registro solo tras una persistencia exitosa; nunca confiar en `reply_text` del LLM.
+- Requiere usuario previamente registrado y vinculado por `whatsapp_id`; STK-35 no crea usuarios.
+- `categoria_id` solo si existe una categoría activa del usuario; si no, queda `null`. No crear categorías automáticamente.
+- No persistir como movimientos los intents `greeting`, `out_of_scope`, `reminder`, `budget_query`, `expense_summary`.
+- No asumir que una migración versionada o el snapshot local prueban el estado aplicado en Supabase; los índices productivos se verifican por el proceso operativo.
 
-### 3.1 Contrato DB MVP Release 1
-- Usar `public.movimientos_financieros` como entidad central del MVP para ingresos y egresos.
-- Usar `public.usuario` como tabla oficial de usuarios; el contrato requiere `whatsapp_id` para mapear WhatsApp con `usuario.id`.
-- No ejecutar SQL ni tocar Supabase directamente desde tareas de agentes; todo cambio de schema debe versionarse primero en GitHub.
-- Mantener la lógica de negocio fuera de `app/main.py`; el parseo va en servicios LLM y los cambios de estado en servicios de finanzas.
+## Gotchas específicos
 
-### 3.2 Invariantes del registro por texto (STK-35)
-- El flujo implementado es WhatsApp webhook -> `LLMService` -> `FinanceService` -> `public.movimientos_financieros` -> respuesta.
-- Para movimientos registrables, `intent="expense"` se conserva por compatibilidad y `movement_type` define si es `ingreso` o `egreso`.
-- Confirmar el registro al usuario únicamente después de una persistencia exitosa. Nunca confiar en `reply_text` del LLM para confirmar una escritura.
-- Exigir un usuario previamente registrado y vinculado por `public.usuario.whatsapp_id`; STK-35 no crea usuarios ni implementa register, login o vinculación inicial.
-- Asociar `categoria_id` solo si existe una categoría activa del usuario. No crear categorías automáticamente; sin coincidencia debe quedar `null`.
-- No persistir como movimientos los intents `greeting`, `out_of_scope`, `reminder`, `budget_query` o `expense_summary`.
-- Tratar alta/vinculación de usuarios, categorías default, Magic Link/STK-54 y consulta de movimientos/STK-128 como trabajo separado, no como comportamiento implementado por STK-35.
-- No asumir que una migración versionada o el snapshot local demuestran el estado aplicado en Supabase; los índices productivos deben verificarse por el proceso operativo correspondiente.
+- **Redis es opcional en local pero obligatorio para multi-turno**: `ConversationService` crea su propio cliente (separado del `redis_client` global de `main.py`) y ante fallo logs y devuelve estado vacío (degradación silenciosa). Los flujos multi-turno (confirmación de categoría, creación de recordatorio en pasos, rename por título duplicado) dependen de Redis.
+- **Scheduler debe correr una sola vez, no por worker**: el `Dockerfile` usa `gunicorn -w 1 -k uvicorn.workers.UvicornWorker` a propósito. No agregar workers extras.
+- **`load_dotenv()` va ANTES de importar submódulos en `main.py`**; mantener ese orden si se tocan imports de `app.`.
+- En `main.py` hay dos ramas de dispatcher (STK-39 v2 con hint de categoría y el flujo legacy) que pueden superponerse; al tocar el webhook revisar que el `intent` no se procese dos veces.
 
-### 4. Tareas en segundo plano
-- Toda lógica basada en tiempo, notificaciones o procesamiento batch debe encapsularse y orquestarse desde `app/scheduler.py`.
+## Verificar cambios
 
-### 5. Deploy
-- La app usa `Dockerfile` y `render.yaml` para hosting en contenedor. Manejar correctamente el `lifespan` de la app para iniciar y detener servicios en background limpiamente.
+- Lint + tests (same as GitHub Actions en pushes y PR a `main`; `WHATSAPP_VERIFY_TOKEN` se setea con valor de test por CI):
+```powershell
+python -m ruff check .
+python -m pytest -v
+```
+- Tests NO requieren red real: usan SQLite en memoria y `monkeypatch.setattr(...SessionLocal...)`; LLM, WhatsApp y Redis se mockean con `AsyncMock`/`unittest.mock`. Los tests de `ConversationService` mockean el cliente Redis.
+- Para levantar local: venv Python 3.11, `pip install -r requirements.txt`, copiar `.env.example` a `.env`, `python -m uvicorn app.main:app --reload`. En local, `DATABASE_URL` por defecto `sqlite:///./luka.db`.
+
+## Principios de Diseño y Arquitectura
+
+- No preserves la compatibilidad con versiones anteriores. Elimina las rutas obsoletas en lugar de añadir capas de compatibilidad, soluciones alternativas (fallbacks) o migraciones.
+- Elige la implementación más simple que cumpla plenamente con los requisitos actuales. Evita abstracciones especulativas, configuraciones innecesarias e indirecciones.
+- Haz crecer el sistema por capas. Comienza desde la versión más pequeña que funcione de extremo a extremo y añade cada nueva capacidad sobre un producto que ya funcione. Nunca cambies un producto funcional por complejidad inconclusa.
+- Mantén los componentes modulares y las responsabilidades claramente separadas.
+- Prefiere librerías consolidadas y bien mantenidas cuando reduzcan la complejidad general o mejoren la confiabilidad. No vuelvas a implementar funcionalidades comunes sin una razón clara.
+- Apóyate en las dependencias existentes en el proyecto antes de escribir tu propia implementación o añadir nuevos paquetes. No asumas que a una librería le falta una capacidad sin consultar antes su documentación y tipos. No añadas nuevas dependencias a menos que se te indique o que sea estrictamente necesario.
+- Toma decisiones de arquitectura a largo plazo. No aceptes soluciones parche que solo funcionen por el momento y estén destinadas a ser reemplazadas más adelante.
 
 ## Referencias DeepWiki
-Para porciones complejas de arquitectura, consultar estas referencias:
+
 - Overview: https://deepwiki.com/blob1618/luka/1-luka-overview
-- Estructura del proyecto: https://deepwiki.com/blob1618/luka/1.2-project-structure
+- Estructura: https://deepwiki.com/blob1618/luka/1.2-project-structure
 - Arquitectura central: https://deepwiki.com/blob1618/luka/2-core-architecture
 - Servicio LLM: https://deepwiki.com/blob1618/luka/2.3-llm-service-(gemini-integration)
 - Servicio de finanzas: https://deepwiki.com/blob1618/luka/3.1-finance-service
-- Modelos de base de datos: https://deepwiki.com/blob1618/luka/4.1-database-models
+- Modelos de BD: https://deepwiki.com/blob1618/luka/4.1-database-models
 - Deploy: https://deepwiki.com/blob1618/luka/5-deployment
