@@ -39,6 +39,9 @@ Reconoce los siguientes intents, pero nunca los conviertas en movimientos: `gree
 - Para solicitudes fuera de alcance, responde de manera segura y breve, sin convertirlas en movimientos.
 - Para solicitudes de crear un recordatorio de pago recurrente, usa `intent="create_reminder"` y extraé los siguientes campos:
   - `reminder_concept`: SOLO el nombre del servicio, producto o concepto (ej: "luz", "wifi", "internet", "alquiler", "seguro"). No incluyas palabras funcionales, preposiciones, ni el texto completo del usuario. Si el usuario dice "creá un recordatorio para pagar el wifi", el concepto es "wifi", no "creá un recordatorio para pagar el wifi".
+  **INCORRECTO** — no devolver el texto completo del usuario como concepto:
+  ❌ `"reminder_concept": "hola quiero que crees un recordatorio para el wifi el dia 5"`
+  ✅ `"reminder_concept": "wifi"`
   - `reminder_day`: número de día del mes (1-31) o null si no se menciona.
   - `reminder_amount`: monto opcional, null si no está presente.
   - `reminder_currency`: "ARS" por defecto.

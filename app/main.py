@@ -201,12 +201,14 @@ def _is_create_reminder(extracted_data: dict) -> bool:
 
 
 _CONCEPT_EXTRACTOR = re.compile(
-    r'(?:recordatorio|avis(?:ar|ame?)|record(?:ar|ame?))\s+'
-    r'(?:(?:de|para|el|la|los|las|un|una|del|al|pagar|crear|hacer)\s+)*'
+    r'(?:recordatorio|avis(?:ar|ame?)|record(?:ar|ame?)|crea(?:r|me)?|quiero)\s+'
+    r'(?:(?:de|para|el|la|los|las|un|una|del|al|pagar|crear|hacer|recordatorio)\s+)*'
     r'(\w[\w\s]{0,30}?\w)'
     r'(?=\s+(?:el\s+)?(?:d[ií]a|\d)|$)',
     re.IGNORECASE,
 )
+
+_VERBOS_ACCION = re.compile(r'\b(pagar|crear|quiero|crees|hacer|avisar|recordar)\b', re.IGNORECASE)
 
 
 def _extract_concept_from_text(text: str) -> str | None:
@@ -222,9 +224,12 @@ def _validate_reminder_concept(llm_concept: str | None, text_body: str) -> str |
     if not llm_concept:
         return _extract_concept_from_text(text_body)
     cleaned = llm_concept.strip()
-    if len(cleaned) <= 40 and len(cleaned.split()) <= 3:
-        return cleaned
-    return _extract_concept_from_text(text_body)
+    # force regex if concept smells like a sentence (contains verbs or > 3 words)
+    if _VERBOS_ACCION.search(cleaned):
+        return _extract_concept_from_text(text_body)
+    if len(cleaned) > 32 or len(cleaned.split()) > 3:
+        return _extract_concept_from_text(text_body)
+    return cleaned
 
 
 def _reminder_creation_reply(
@@ -716,6 +721,68 @@ async def handle_webhook(request: Request):
                     elif intent == "list_categories":
                         reply_text = await _handle_list_categories(sender_phone)
 
+                    elif intent == "list_reminders":
+                        reply_text = await _handle_list_reminders(sender_phone)
+
+                    elif intent == "update_reminder":
+                        reminder_concept = extracted_data.get("reminder_concept")
+                        reminder_id = extracted_data.get("reminder_id") or ""
+                        if reminder_concept:
+                            try:
+                                found = ReminderService.find_by_title(sender_phone, reminder_concept)
+                                if found:
+                                    reminder_id = str(found[0].id or "")
+                            except Exception:
+                                pass
+                        reminder_result = ReminderService.update_reminder(
+                            sender_phone=sender_phone,
+                            reminder_id=reminder_id,
+                            llm_result=extracted_data,
+                        )
+                        reply_text = _reminder_update_reply(reminder_result)
+
+                    elif intent == "pause_reminder":
+                        concept = extracted_data.get("reminder_concept")
+                        if concept:
+                            reminder_result = ReminderService.pause_by_title(
+                                sender_phone=sender_phone,
+                                title=concept,
+                            )
+                        else:
+                            reminder_result = ReminderService.pause_reminder(
+                                sender_phone=sender_phone,
+                                reminder_id=extracted_data.get("reminder_id") or "",
+                            )
+                        reply_text = _reminder_state_reply(reminder_result, "paused")
+
+                    elif intent == "activate_reminder":
+                        concept = extracted_data.get("reminder_concept")
+                        if concept:
+                            reminder_result = ReminderService.activate_by_title(
+                                sender_phone=sender_phone,
+                                title=concept,
+                            )
+                        else:
+                            reminder_result = ReminderService.activate_reminder(
+                                sender_phone=sender_phone,
+                                reminder_id=extracted_data.get("reminder_id") or "",
+                            )
+                        reply_text = _reminder_state_reply(reminder_result, "activated")
+
+                    elif intent == "delete_reminder":
+                        concept = extracted_data.get("reminder_concept")
+                        if concept:
+                            reminder_result = ReminderService.delete_by_title(
+                                sender_phone=sender_phone,
+                                title=concept,
+                            )
+                        else:
+                            reminder_result = ReminderService.delete_reminder(
+                                sender_phone=sender_phone,
+                                reminder_id=extracted_data.get("reminder_id") or "",
+                            )
+                        reply_text = _reminder_delete_reply(reminder_result)
+
                     elif _is_financial_movement(extracted_data):
                         # Nuevo movimiento: registrar inmediatamente con hint
                         reply_text = await _register_and_reply_with_hint(
@@ -788,63 +855,6 @@ async def handle_webhook(request: Request):
                             reply_text = await _handle_delete_category(sender_phone, extracted_data)
                         elif intent == "list_categories":
                             reply_text = await _handle_list_categories(sender_phone)
-                        elif intent == "list_reminders":
-                            reply_text = await _handle_list_reminders(sender_phone)
-                        elif intent == "update_reminder":
-                            reminder_concept = extracted_data.get("reminder_concept")
-                            reminder_id = extracted_data.get("reminder_id") or ""
-                            if reminder_concept:
-                                try:
-                                    found = ReminderService.find_by_title(sender_phone, reminder_concept)
-                                    if found:
-                                        reminder_id = str(found[0].id or "")
-                                except Exception:
-                                    pass
-                            reminder_result = ReminderService.update_reminder(
-                                sender_phone=sender_phone,
-                                reminder_id=reminder_id,
-                                llm_result=extracted_data,
-                            )
-                            reply_text = _reminder_update_reply(reminder_result)
-                        elif intent == "pause_reminder":
-                            concept = extracted_data.get("reminder_concept")
-                            if concept:
-                                reminder_result = ReminderService.pause_by_title(
-                                    sender_phone=sender_phone,
-                                    title=concept,
-                                )
-                            else:
-                                reminder_result = ReminderService.pause_reminder(
-                                    sender_phone=sender_phone,
-                                    reminder_id=extracted_data.get("reminder_id") or "",
-                                )
-                            reply_text = _reminder_state_reply(reminder_result, "paused")
-                        elif intent == "activate_reminder":
-                            concept = extracted_data.get("reminder_concept")
-                            if concept:
-                                reminder_result = ReminderService.activate_by_title(
-                                    sender_phone=sender_phone,
-                                    title=concept,
-                                )
-                            else:
-                                reminder_result = ReminderService.activate_reminder(
-                                    sender_phone=sender_phone,
-                                    reminder_id=extracted_data.get("reminder_id") or "",
-                                )
-                            reply_text = _reminder_state_reply(reminder_result, "activated")
-                        elif intent == "delete_reminder":
-                            concept = extracted_data.get("reminder_concept")
-                            if concept:
-                                reminder_result = ReminderService.delete_by_title(
-                                    sender_phone=sender_phone,
-                                    title=concept,
-                                )
-                            else:
-                                reminder_result = ReminderService.delete_reminder(
-                                    sender_phone=sender_phone,
-                                    reminder_id=extracted_data.get("reminder_id") or "",
-                                )
-                            reply_text = _reminder_delete_reply(reminder_result)
                         elif _is_financial_movement(extracted_data):
                             # Movimiento financiero: ver si tiene categoría inferida
                             category_name = extracted_data.get("category")
@@ -884,52 +894,6 @@ async def handle_webhook(request: Request):
                         elif intent in ("confirm_category", "reject_category"):
                             # Estos intents no deberían llegar acá sin pending, pero por si acaso
                             reply_text = "No encontré un movimiento pendiente para confirmar."
-                        elif _is_create_reminder(extracted_data):
-                            validated_concept = _validate_reminder_concept(
-                                extracted_data.get("reminder_concept"), text_body
-                            )
-                            if validated_concept is None:
-                                reply_text = "¿Qué nombre querés ponerle al recordatorio?"
-                            elif not extracted_data.get("reminder_day"):
-                                from app.services.conversation import PendingReminder
-                                pending_r = PendingReminder(
-                                    sender_phone=sender_phone,
-                                    reminder_concept=validated_concept,
-                                    reminder_day=None,
-                                    reminder_amount=(
-                                        Decimal(str(extracted_data["reminder_amount"]))
-                                        if extracted_data.get("reminder_amount") else None
-                                    ),
-                                    reminder_currency=extracted_data.get("reminder_currency") or "ARS",
-                                )
-                                await ConversationService.set_pending_reminder(sender_phone, pending_r)
-                                display_concept = validated_concept or "ese pago"
-                                reply_text = f"¿Qué día del mes querés que te avise de {display_concept}?"
-                            else:
-                                extracted_data["reminder_concept"] = validated_concept
-                                reminder_result = ReminderService.create_reminder(
-                                    sender_phone=sender_phone,
-                                    llm_result=extracted_data,
-                                )
-                                if reminder_result.status == "duplicate_title":
-                                    from app.services.conversation import PendingReminder
-                                    pending_r = PendingReminder(
-                                        sender_phone=sender_phone,
-                                        reminder_concept=None,
-                                        reminder_day=extracted_data.get("reminder_day"),
-                                        reminder_amount=(
-                                            Decimal(str(extracted_data["reminder_amount"]))
-                                            if extracted_data.get("reminder_amount") else None
-                                        ),
-                                        reminder_currency=extracted_data.get("reminder_currency") or "ARS",
-                                    )
-                                    await ConversationService.set_pending_rename(sender_phone, pending_r)
-                                print(
-                                    "[REMINDER_CREATION]",
-                                    f"user={sender_phone}",
-                                    f"status={reminder_result.status}",
-                                )
-                                reply_text = _reminder_creation_reply(reminder_result, extracted_data)
                         else:
                             intent_str = extracted_data.get("intent", "out_of_scope")
                             print(f"[{str(intent_str).upper()}] User {sender_phone}: {text_body}")

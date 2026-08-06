@@ -184,7 +184,7 @@ class TestCheckReminders:
         """When the window is closed and template exists, template payload is used."""
         SessionFactory, engine = _make_session_factory()
         monkeypatch.setattr("app.scheduler.SessionLocal", SessionFactory)
-        monkeypatch.setenv("WHATSAPP_REMINDER_TEMPLATE_NAME", "reminder_payment")
+        monkeypatch.setenv("WHATSAPP_REMINDER_TEMPLATE_NAME", "recordatorio_pago_vencimiento")
 
         session = SessionFactory()
         now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
@@ -200,8 +200,8 @@ class TestCheckReminders:
 
         mock_send.assert_called_once()
         _, kwargs = mock_send.call_args
-        assert kwargs["template_name"] == "reminder_payment"
-        assert kwargs["template_parameters"] == ["Alquiler", "15/07", "350000"]
+        assert kwargs["template_name"] == "recordatorio_pago_vencimiento"
+        assert kwargs["template_parameters"] == ["Alquiler", "15/07", "$350000 ARS"]
 
     @pytest.mark.asyncio
     async def test_uses_buenos_aires_timezone_for_alert_day(self, monkeypatch):
@@ -244,3 +244,186 @@ class TestCheckReminders:
 
         mock_send.assert_called_once()
         assert "Alquiler" in mock_send.call_args[0][1]
+
+    @pytest.mark.asyncio
+    async def test_template_amount_format_with_currency(self, monkeypatch):
+        """Template parameter {{3}} should be '$3500 ARS' format."""
+        SessionFactory, engine = _make_session_factory()
+        monkeypatch.setattr("app.scheduler.SessionLocal", SessionFactory)
+        monkeypatch.setenv("WHATSAPP_REMINDER_TEMPLATE_NAME", "recordatorio_pago_vencimiento")
+
+        session = SessionFactory()
+        now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
+        user = _seed_user(session, ultimo_mensaje_en=now - timedelta(hours=48))
+        _seed_reminder(session, user, dia_del_mes=15, titulo="Netflix", monto=Decimal("3500"))
+        session.close()
+
+        mock_send = AsyncMock()
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message", mock_send)
+
+        from app.scheduler import check_reminders
+        await check_reminders(_now=now)
+
+        mock_send.assert_called_once()
+        _, kwargs = mock_send.call_args
+        assert kwargs["template_parameters"][2] == "$3500 ARS"
+
+    @pytest.mark.asyncio
+    async def test_template_amount_no_especificado(self, monkeypatch):
+        """Template parameter {{3}} should be 'no especificado' when monto is None."""
+        SessionFactory, engine = _make_session_factory()
+        monkeypatch.setattr("app.scheduler.SessionLocal", SessionFactory)
+        monkeypatch.setenv("WHATSAPP_REMINDER_TEMPLATE_NAME", "recordatorio_pago_vencimiento")
+
+        session = SessionFactory()
+        now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
+        user = _seed_user(session, ultimo_mensaje_en=now - timedelta(hours=48))
+        _seed_reminder(session, user, dia_del_mes=15, titulo="Luz", monto=None)
+        session.close()
+
+        mock_send = AsyncMock()
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message", mock_send)
+
+        from app.scheduler import check_reminders
+        await check_reminders(_now=now)
+
+        mock_send.assert_called_once()
+        _, kwargs = mock_send.call_args
+        assert kwargs["template_parameters"][2] == "no especificado"
+
+    @pytest.mark.asyncio
+    async def test_dia_31_in_february_clamps(self, monkeypatch):
+        """Reminder for day 31 in February should fire on Feb 27 (28-1)."""
+        SessionFactory, engine = _make_session_factory()
+        monkeypatch.setattr("app.scheduler.SessionLocal", SessionFactory)
+
+        session = SessionFactory()
+        now = datetime(2026, 2, 27, 12, 0, 0, tzinfo=timezone.utc)
+        user = _seed_user(session, ultimo_mensaje_en=now - timedelta(hours=2))
+        _seed_reminder(session, user, dia_del_mes=31, titulo="Internet")
+        session.close()
+
+        mock_send = AsyncMock()
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message", mock_send)
+
+        from app.scheduler import check_reminders
+        await check_reminders(_now=now)
+
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][1]
+        assert "28/02" in msg or "Internet" in msg
+
+    @pytest.mark.asyncio
+    async def test_dia_30_in_february_leap_year(self, monkeypatch):
+        """Reminder for day 30 in February leap year (2028) should fire on Feb 28 (29-1)."""
+        SessionFactory, engine = _make_session_factory()
+        monkeypatch.setattr("app.scheduler.SessionLocal", SessionFactory)
+
+        session = SessionFactory()
+        now = datetime(2028, 2, 28, 12, 0, 0, tzinfo=timezone.utc)
+        user = _seed_user(session, ultimo_mensaje_en=now - timedelta(hours=2))
+        _seed_reminder(session, user, dia_del_mes=30, titulo="Netflix")
+        session.close()
+
+        mock_send = AsyncMock()
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message", mock_send)
+
+        from app.scheduler import check_reminders
+        await check_reminders(_now=now)
+
+        mock_send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_failure_does_not_mark_as_sent(self, monkeypatch):
+        """When send_whatsapp_message returns False, ultimo_aviso_enviado stays None."""
+        SessionFactory, engine = _make_session_factory()
+        monkeypatch.setattr("app.scheduler.SessionLocal", SessionFactory)
+
+        session = SessionFactory()
+        now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
+        user = _seed_user(session, ultimo_mensaje_en=now - timedelta(hours=2))
+        rec = _seed_reminder(session, user, dia_del_mes=15, titulo="Luz")
+        rec_id = rec.id
+        session.close()
+
+        mock_send = AsyncMock(return_value=False)
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message", mock_send)
+
+        from app.scheduler import check_reminders
+        await check_reminders(_now=now)
+
+        mock_send.assert_called_once()
+        session = SessionFactory()
+        saved = session.query(Recordatorio).filter(Recordatorio.id == rec_id).first()
+        assert saved.ultimo_aviso_enviado is None
+        session.close()
+
+    @pytest.mark.asyncio
+    async def test_send_failure_one_user_continues_others(self, monkeypatch):
+        """When send fails for user A, user B's reminder still sends."""
+        SessionFactory, engine = _make_session_factory()
+        monkeypatch.setattr("app.scheduler.SessionLocal", SessionFactory)
+
+        session = SessionFactory()
+        now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
+        user_a = _seed_user(session, whatsapp_id="549111", ultimo_mensaje_en=now - timedelta(hours=2))
+        user_b = _seed_user(session, whatsapp_id="549222", ultimo_mensaje_en=now - timedelta(hours=2))
+        _seed_reminder(session, user_a, dia_del_mes=15, titulo="Luz")
+        _seed_reminder(session, user_b, dia_del_mes=15, titulo="Internet")
+        session.close()
+
+        async def fail_first(whatsapp_id, *args, **kwargs):
+            if whatsapp_id == "549111":
+                return False
+            return True
+
+        mock_send = AsyncMock(side_effect=fail_first)
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message", mock_send)
+
+        from app.scheduler import check_reminders
+        await check_reminders(_now=now)
+
+        assert mock_send.await_count == 2
+        # Both users' reminders should have been attempted
+        calls = [call.args[0] for call in mock_send.await_args_list]
+        assert "549111" in calls
+        assert "549222" in calls
+
+    @pytest.mark.asyncio
+    async def test_rollover_next_month_after_alert_sent(self, monkeypatch):
+        """After sending on July 14, the August run on Aug 14 should send again."""
+        SessionFactory, engine = _make_session_factory()
+        monkeypatch.setattr("app.scheduler.SessionLocal", SessionFactory)
+
+        session = SessionFactory()
+        july = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
+        user = _seed_user(session, ultimo_mensaje_en=july - timedelta(hours=2))
+        rec = _seed_reminder(session, user, dia_del_mes=15, titulo="Luz")
+        rec_id = rec.id
+        user_id = user.id
+        session.close()
+
+        mock_send = AsyncMock()
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message", mock_send)
+
+        from app.scheduler import check_reminders
+
+        # July send
+        await check_reminders(_now=july)
+        assert mock_send.await_count == 1
+
+        # Verify ultimo_aviso_enviado was set
+        session = SessionFactory()
+        rec = session.query(Recordatorio).filter(Recordatorio.id == rec_id).first()
+        assert rec.ultimo_aviso_enviado == date(2026, 7, 14)
+
+        # August run — should send again because ultimo_aviso is in previous month
+        mock_send.reset_mock()
+        aug = datetime(2026, 8, 14, 12, 0, 0, tzinfo=timezone.utc)
+        user = session.query(Usuario).filter(Usuario.id == user_id).first()
+        user.ultimo_mensaje_en = aug - timedelta(hours=2)
+        session.commit()
+        session.close()
+
+        await check_reminders(_now=aug)
+        assert mock_send.await_count == 1

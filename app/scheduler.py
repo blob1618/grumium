@@ -178,7 +178,7 @@ async def check_reminders(_now: datetime | None = None):
 
                     due_date_text = due_date.strftime("%d/%m")
                     amount_text = (
-                        _format_amount(recordatorio.monto)
+                        f"${_format_amount(recordatorio.monto)} {recordatorio.moneda or 'ARS'}"
                         if recordatorio.monto is not None
                         else "no especificado"
                     )

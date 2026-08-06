@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 import app.models.database as database_module
 import app.services.finance as finance_module
 import app.services.onboarding as onboarding_module
+import app.services.reminder as reminder_module
 from app.main import app
 from app.models.database import (
     Base,
@@ -40,6 +41,7 @@ def db_context(monkeypatch):
     monkeypatch.setattr(finance_module, "SessionLocal", testing_session_local)
     monkeypatch.setattr(onboarding_module, "SessionLocal", testing_session_local)
     monkeypatch.setattr(database_module, "SessionLocal", testing_session_local)
+    monkeypatch.setattr(reminder_module, "SessionLocal", testing_session_local)
     monkeypatch.setenv(
         "ONBOARDING_REGISTRATION_URL",
         "https://example.com/registro",
@@ -273,3 +275,199 @@ def test_webhook_integration_duplicate_message_id_does_not_create_second_row(db_
     assert "egreso: supermercado" in first_send_message.await_args.args[1]
     assert "ya hab" in second_send_message.await_args.args[1]
     assert "no lo dupli" in second_send_message.await_args.args[1]
+
+
+def test_create_reminder_not_processed_twice(db_context):
+    """Ensure create_reminder intent triggers send_whatsapp_message exactly once."""
+    session = db_context["session"]
+    create_user(session, whatsapp_id="5491155551234")
+    payload = make_webhook_payload(
+        body="Avisame del alquiler el dia 1",
+        sender_phone="5491155551234",
+        whatsapp_message_id="wamid.reminder.dedup.1",
+    )
+    llm_result = {
+        "intent": "create_reminder",
+        "movement_type": None,
+        "reminder_concept": "alquiler",
+        "reminder_day": 1,
+        "reminder_amount": None,
+        "reminder_currency": "ARS",
+        "reply_text": "Estoy procesando el recordatorio.",
+        "expense": None,
+        "amount": None,
+        "currency": None,
+        "category": None,
+        "description": None,
+        "reminder_title": None,
+        "reminder_date": None,
+    }
+
+    response, process_message, send_message = post_webhook_with_real_finance(
+        payload=payload,
+        llm_result=llm_result,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    process_message.assert_awaited_once()
+    # send_whatsapp_message called exactly once (for the reply)
+    assert send_message.await_count == 1
+
+
+class TestReminderMultiTurn:
+    @pytest.mark.asyncio
+    async def test_missing_day_asks_then_completes(self, db_context):
+        """Turn 1: 'avisame del cable' -> no day -> asks. Turn 2: 'el 10' -> completes."""
+        session = db_context["session"]
+        create_user(session, whatsapp_id="5491155551234")
+
+        pending = None
+
+        async def set_pending(phone, p):
+            nonlocal pending
+            pending = p
+
+        async def get_pending(phone):
+            return pending
+
+        async def clear_state(phone):
+            nonlocal pending
+            pending = None
+
+        turn1_payload = make_webhook_payload(
+            body="avisame del cable",
+            sender_phone="5491155551234",
+            whatsapp_message_id="wamid.multiturn.1",
+        )
+        turn1_llm = {
+            "intent": "create_reminder",
+            "movement_type": None,
+            "reminder_concept": "cable",
+            "reminder_day": None,
+            "reminder_amount": None,
+            "reminder_currency": "ARS",
+            "reply_text": "Estoy procesando el recordatorio.",
+            "expense": None, "amount": None, "currency": None,
+            "category": None, "description": None,
+            "reminder_title": None, "reminder_date": None,
+        }
+
+        with (
+            patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+            patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
+            patch("app.main.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_cat,
+            patch("app.main.ConversationService.get_pending_movement", new_callable=AsyncMock),
+            patch("app.main.ConversationService.is_awaiting_reminder_data", new_callable=AsyncMock) as mock_await_rem,
+            patch("app.main.ConversationService.is_awaiting_rename", new_callable=AsyncMock) as mock_await_rename,
+            patch("app.main.ConversationService.get_pending_reminder", new_callable=AsyncMock) as mock_get_rem,
+            patch("app.main.ConversationService.set_pending_reminder", new_callable=AsyncMock) as mock_set_rem,
+            patch("app.main.ConversationService.set_pending_rename", new_callable=AsyncMock),
+            patch("app.main.ConversationService.clear_state", new_callable=AsyncMock) as mock_clear,
+        ):
+            mock_cat.return_value = False
+            mock_await_rem.return_value = False
+            mock_await_rename.return_value = False
+            mock_set_rem.side_effect = set_pending
+            mock_get_rem.side_effect = get_pending
+            mock_clear.side_effect = clear_state
+            process_message.return_value = turn1_llm
+
+            response1 = client.post("/webhook", json=turn1_payload)
+
+        assert response1.status_code == 200
+        send_message.assert_awaited_once()
+        turn1_reply = send_message.await_args.args[1]
+        assert "día" in turn1_reply.lower() or "dia" in turn1_reply.lower()
+        assert pending is not None
+        assert pending.reminder_concept == "cable"
+
+        # Turn 2: provide the day
+        send_message.reset_mock()
+
+        turn2_payload = make_webhook_payload(
+            body="el 10",
+            sender_phone="5491155551234",
+            whatsapp_message_id="wamid.multiturn.2",
+        )
+
+        with (
+            patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message2,
+            patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message2,
+            patch("app.main.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_cat2,
+            patch("app.main.ConversationService.get_pending_movement", new_callable=AsyncMock),
+            patch("app.main.ConversationService.is_awaiting_reminder_data", new_callable=AsyncMock) as mock_await_rem2,
+            patch("app.main.ConversationService.is_awaiting_rename", new_callable=AsyncMock) as mock_await_rename2,
+            patch("app.main.ConversationService.get_pending_reminder", new_callable=AsyncMock) as mock_get_rem2,
+            patch("app.main.ConversationService.set_pending_reminder", new_callable=AsyncMock),
+            patch("app.main.ConversationService.set_pending_rename", new_callable=AsyncMock),
+            patch("app.main.ConversationService.clear_state", new_callable=AsyncMock) as mock_clear2,
+        ):
+            mock_cat2.return_value = False
+            mock_await_rem2.return_value = True
+            mock_get_rem2.return_value = pending
+            mock_await_rename2.return_value = False
+            mock_clear2.side_effect = clear_state
+            process_message2.return_value = {"reminder_day": 10}
+
+            response2 = client.post("/webhook", json=turn2_payload)
+
+        assert response2.status_code == 200
+        send_message2.assert_awaited_once()
+        turn2_reply = send_message2.await_args.args[1]
+        assert "Dale" in turn2_reply
+
+        # Verify reminder created in DB
+        from app.models.database import Recordatorio
+        recs = session.query(Recordatorio).all()
+        assert len(recs) == 1
+        assert recs[0].titulo == "cable"
+        assert recs[0].dia_del_mes == 10
+
+    @pytest.mark.asyncio
+    async def test_missing_concept_asks_name(self, db_context):
+        """When concept cannot be extracted, bot asks for a name."""
+        session = db_context["session"]
+        create_user(session, whatsapp_id="5491155559999")
+
+        payload = make_webhook_payload(
+            body="recordame",
+            sender_phone="5491155559999",
+            whatsapp_message_id="wamid.multiturn.noconcept.1",
+        )
+        llm_result = {
+            "intent": "create_reminder",
+            "movement_type": None,
+            "reminder_concept": None,
+            "reminder_day": 5,
+            "reminder_amount": None,
+            "reminder_currency": "ARS",
+            "reply_text": "Estoy procesando el recordatorio.",
+            "expense": None, "amount": None, "currency": None,
+            "category": None, "description": None,
+            "reminder_title": None, "reminder_date": None,
+        }
+
+        with (
+            patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+            patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
+            patch("app.main.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_cat,
+            patch("app.main.ConversationService.get_pending_movement", new_callable=AsyncMock),
+            patch("app.main.ConversationService.is_awaiting_reminder_data", new_callable=AsyncMock) as mock_await_rem,
+            patch("app.main.ConversationService.is_awaiting_rename", new_callable=AsyncMock) as mock_await_rename,
+            patch("app.main.ConversationService.get_pending_reminder", new_callable=AsyncMock),
+            patch("app.main.ConversationService.set_pending_reminder", new_callable=AsyncMock),
+            patch("app.main.ConversationService.set_pending_rename", new_callable=AsyncMock),
+            patch("app.main.ConversationService.clear_state", new_callable=AsyncMock),
+        ):
+            mock_cat.return_value = False
+            mock_await_rem.return_value = False
+            mock_await_rename.return_value = False
+            process_message.return_value = llm_result
+
+            response = client.post("/webhook", json=payload)
+
+        assert response.status_code == 200
+        send_message.assert_awaited_once()
+        reply = send_message.await_args.args[1]
+        assert "nombre" in reply.lower()
