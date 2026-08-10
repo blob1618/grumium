@@ -10,13 +10,14 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.database import DashboardLoginLink, SessionLocal, Usuario
 from app.services.onboarding import (
+    DEFAULT_REGISTRATION_URL,
     _non_negative_int_from_env,
     _positive_int_from_env,
     _utc_datetime,
 )
 
 
-DEFAULT_LOGIN_URL = "http://localhost:8001/login"
+DEFAULT_LOGIN_URL = "http://localhost:8000/login"
 DEFAULT_LINK_TTL_MINUTES = 10
 DEFAULT_RESEND_COOLDOWN_SECONDS = 60
 DEFAULT_MAX_RESENDS = 3
@@ -46,7 +47,9 @@ class DashboardLinkConfig:
     @classmethod
     def from_env(cls) -> "DashboardLinkConfig":
         return cls(
-            login_url=_valid_login_url(os.getenv("DASHBOARD_LOGIN_BASE_URL")),
+            login_url=_login_url_from_frontend_host(
+                os.getenv("ONBOARDING_REGISTRATION_URL")
+            ),
             link_ttl_minutes=_positive_int_from_env(
                 "DASHBOARD_LOGIN_TTL_MINUTES",
                 DEFAULT_LINK_TTL_MINUTES,
@@ -62,12 +65,17 @@ class DashboardLinkConfig:
         )
 
 
-def _valid_login_url(value: str | None) -> str:
-    candidate = (value or DEFAULT_LOGIN_URL).strip()
+def _login_url_from_frontend_host(onboarding_url: str | None) -> str:
+    """Build the dashboard login URL from the same host ONBOARDING_REGISTRATION_URL
+    already points to, instead of a second config value that could drift out
+    of sync with it — both /registro and /login are served by the same
+    frontend deployment.
+    """
+    candidate = (onboarding_url or DEFAULT_REGISTRATION_URL).strip()
     parsed = urlsplit(candidate)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return DEFAULT_LOGIN_URL
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    return urlunsplit((parsed.scheme, parsed.netloc, "/login", "", ""))
 
 
 class DashboardLinkService:
