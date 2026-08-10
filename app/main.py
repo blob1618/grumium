@@ -20,6 +20,10 @@ from app.services.onboarding import (  # noqa: E402
     OnboardingDecision,
     OnboardingService,
 )
+from app.services.dashboard_link import (  # noqa: E402
+    DashboardLinkDecision,
+    DashboardLinkService,
+)
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService  # noqa: E402
 from app.services.conversation import (  # noqa: E402
     ConversationService,
@@ -351,6 +355,19 @@ def _onboarding_invitation_reply(registration_url: str, ttl_minutes: int) -> str
     )
 
 
+def _dashboard_link_reply(login_url: str, ttl_minutes: int) -> str:
+    return (
+        "Accedé a tu dashboard acá:\n\n"
+        f"{login_url}\n\n"
+        f"El enlace vence en {ttl_minutes} minutos y sólo se puede usar una vez."
+    )
+
+
+_DASHBOARD_LINK_NOT_ELIGIBLE_REPLY = (
+    "Todavía no tenés una cuenta vinculada. Escribime cualquier mensaje para empezar."
+)
+
+
 # ---------------------------------------------------------------------------
 # STK-39 v2: Handlers de gestión de categorías
 # ---------------------------------------------------------------------------
@@ -627,6 +644,35 @@ async def handle_webhook(request: Request):
                             sender_phone,
                             "No pude verificar tu cuenta. Intentá nuevamente en unos minutos.",
                         )
+                        continue
+
+                    # ------------------------------------------------------------------
+                    # STK-89: comando exacto para pedir un enlace de acceso al dashboard.
+                    # Match exacto (no LLM) para no depender de que el modelo clasifique
+                    # bien la intención, y porque el frontend ya promete este comando.
+                    # ------------------------------------------------------------------
+                    if text_body.strip().lower() == "/link":
+                        dashboard_link_result = DashboardLinkService.generate_or_reuse(
+                            sender_phone
+                        )
+                        if dashboard_link_result.decision == DashboardLinkDecision.SEND_LINK:
+                            await send_whatsapp_message(
+                                sender_phone,
+                                _dashboard_link_reply(
+                                    dashboard_link_result.login_url,
+                                    dashboard_link_result.link_ttl_minutes,
+                                ),
+                            )
+                        elif dashboard_link_result.decision == DashboardLinkDecision.NOT_ELIGIBLE:
+                            await send_whatsapp_message(
+                                sender_phone, _DASHBOARD_LINK_NOT_ELIGIBLE_REPLY
+                            )
+                        elif dashboard_link_result.decision == DashboardLinkDecision.ERROR:
+                            await send_whatsapp_message(
+                                sender_phone,
+                                "No pude generar tu enlace. Intentá nuevamente en unos minutos.",
+                            )
+                        # SUPPRESS_RESPONSE (cooldown/límite de reenvíos): sin respuesta.
                         continue
 
                     # Track last message time for 24h window

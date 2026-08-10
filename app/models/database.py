@@ -135,6 +135,65 @@ class OnboardingInvitacion(Base):
         ),
     )
 
+class DashboardLoginLink(Base):
+    __tablename__ = "dashboard_login_link"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    usuario_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("usuario.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash = Column(String, nullable=False)
+    estado = Column(String, nullable=False, default="pendiente")
+    expira_en = Column(DateTime(timezone=True), nullable=False)
+    reenvios = Column(Integer, nullable=False, default=0)
+    ultimo_envio_en = Column(DateTime(timezone=True), nullable=True)
+    consumido_en = Column(DateTime(timezone=True), nullable=True)
+    creado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    actualizado_en = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="dashboard_login_link_token_hash_key"),
+        CheckConstraint(
+            "trim(token_hash) <> ''",
+            name="dashboard_login_link_token_hash_no_vacio_check",
+        ),
+        CheckConstraint(
+            "estado IN ('pendiente', 'consumido', 'vencido')",
+            name="dashboard_login_link_estado_check",
+        ),
+        CheckConstraint(
+            "reenvios >= 0",
+            name="dashboard_login_link_reenvios_check",
+        ),
+        CheckConstraint(
+            "expira_en > creado_en",
+            name="dashboard_login_link_expiracion_check",
+        ),
+        CheckConstraint(
+            "(estado = 'pendiente' AND consumido_en IS NULL) OR "
+            "(estado = 'consumido' AND consumido_en IS NOT NULL) OR "
+            "(estado = 'vencido' AND consumido_en IS NULL)",
+            name="dashboard_login_link_estado_campos_check",
+        ),
+        Index("dashboard_login_link_usuario_id_idx", "usuario_id"),
+        Index("dashboard_login_link_estado_expira_idx", "estado", "expira_en"),
+        Index(
+            "dashboard_login_link_usuario_pendiente_uidx",
+            "usuario_id",
+            unique=True,
+            postgresql_where=(estado == "pendiente"),
+            sqlite_where=(estado == "pendiente"),
+        ),
+    )
+
+
 class AcuerdoVersion(Base):
     __tablename__ = "acuerdo_version"
 
