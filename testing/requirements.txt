@@ -1,0 +1,4 @@
+# testing/requirements.txt
+# Inherits project deps + adds Streamlit
+-r ../requirements.txt
+streamlit>=1.45.0,<2.0.0

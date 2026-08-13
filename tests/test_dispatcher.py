@@ -1,5 +1,6 @@
 """Tests for the extracted message dispatcher."""
 
+import contextlib
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
@@ -348,3 +349,1588 @@ class TestReminderIntents:
 
         assert result.service_invoked == "reminder"
         assert "pausé" in result.reply_text.lower()
+
+
+# ---------------------------------------------------------------------------
+# More reminder intents
+# ---------------------------------------------------------------------------
+
+def reminder_llm_result(intent, **overrides):
+    result = {
+        "intent": intent,
+        "reminder_id": None,
+        "reminder_concept": "luz",
+        "reminder_day": 15,
+        "reminder_amount": None,
+        "reminder_currency": "ARS",
+        "movement_type": None,
+        "amount": None,
+        "currency": "ARS",
+        "category": None,
+        "description": None,
+        "expense": None,
+        "reply_text": "procesando",
+        "reminder_title": None,
+        "reminder_date": None,
+    }
+    result.update(overrides)
+    return result
+
+
+@contextmanager
+def reminder_patches(intent, service_patch=None, **llm_overrides):
+    cm_list = [
+        patch(
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+            return_value=known_user(),
+        ),
+        patch(
+            "app.services.dispatcher.LLMService.process_message",
+            new_callable=AsyncMock,
+            return_value=reminder_llm_result(intent, **llm_overrides),
+        ),
+        patch(
+            "app.services.dispatcher.ConversationService.is_awaiting_rename",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "app.services.dispatcher._update_ultimo_mensaje",
+        ),
+    ]
+    if service_patch is not None:
+        cm_list.append(service_patch)
+
+    with contextlib.ExitStack() as stack:
+        for cm in cm_list:
+            stack.enter_context(cm)
+        yield
+
+
+class TestMoreReminderIntents:
+    @pytest.mark.asyncio
+    async def test_activate_reminder_routes_by_title(self):
+        from app.services.reminder import ReminderResult
+
+        with reminder_patches(
+            "activate_reminder",
+            reminder_concept="luz",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.activate_by_title",
+                return_value=ReminderResult(status="activated", message="ok"),
+            ),
+        ):
+            result = await process_incoming_message("12345", "activá luz")
+
+        assert result.service_invoked == "reminder"
+        assert "reactiv" in result.reply_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_activate_reminder_by_id(self):
+        from app.services.reminder import ReminderResult
+
+        with reminder_patches(
+            "activate_reminder",
+            reminder_concept=None,
+            reminder_id="abc-123",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.activate_reminder",
+                return_value=ReminderResult(status="activated", message="ok"),
+            ),
+        ):
+            result = await process_incoming_message("12345", "activá")
+
+        assert result.service_invoked == "reminder"
+
+    @pytest.mark.asyncio
+    async def test_delete_reminder_routes_by_title(self):
+        from app.services.reminder import ReminderResult
+
+        with reminder_patches(
+            "delete_reminder",
+            reminder_concept="luz",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.delete_by_title",
+                return_value=ReminderResult(status="deleted", message="ok"),
+            ),
+        ):
+            result = await process_incoming_message("12345", "borrá luz")
+
+        assert result.service_invoked == "reminder"
+        assert "elimin" in result.reply_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_reminder_by_id(self):
+        from app.services.reminder import ReminderResult
+
+        with reminder_patches(
+            "delete_reminder",
+            reminder_concept=None,
+            reminder_id="abc-123",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.delete_reminder",
+                return_value=ReminderResult(status="deleted", message="ok"),
+            ),
+        ):
+            result = await process_incoming_message("12345", "borrá")
+
+        assert result.service_invoked == "reminder"
+
+    @pytest.mark.asyncio
+    async def test_update_reminder(self):
+        from app.services.reminder import ReminderResult
+
+        with reminder_patches(
+            "update_reminder",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.update_reminder",
+                return_value=ReminderResult(status="updated", message="ok"),
+            ),
+        ):
+            result = await process_incoming_message("12345", "cambia luz al 20")
+
+        assert result.service_invoked == "reminder"
+        assert "actualic" in result.reply_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_update_reminder_finds_by_title(self):
+        from app.services.reminder import ReminderResult
+
+        class FakeReminder:
+            def __init__(self):
+                self.id = "id-456"
+
+        with reminder_patches(
+            "update_reminder",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.update_reminder",
+                return_value=ReminderResult(status="updated", message="ok"),
+            ),
+        ):
+            with patch(
+                "app.services.dispatcher.ReminderService.find_by_title",
+                return_value=[FakeReminder()],
+            ):
+                result = await process_incoming_message("12345", "cambia luz")
+
+        assert result.service_invoked == "reminder"
+
+    @pytest.mark.asyncio
+    async def test_list_reminders(self):
+
+        with reminder_patches(
+            "list_reminders",
+            service_patch=patch(
+                "app.services.dispatcher._handle_list_reminders",
+                new_callable=AsyncMock,
+                return_value="📌 *Tus recordatorios:*\n• Luz",
+            ),
+        ):
+            result = await process_incoming_message("12345", "mis recordatorios")
+
+        assert result.service_invoked == "reminder"
+        assert "Luz" in result.reply_text
+
+
+# ---------------------------------------------------------------------------
+# Category management intents
+# ---------------------------------------------------------------------------
+
+class TestCategoryIntents:
+    @pytest.mark.asyncio
+    async def test_change_category(self):
+        from app.services.conversation import LastRegisteredMovement
+        from decimal import Decimal
+
+        llm_result = {
+            "intent": "change_category",
+            "category": "Hogar",
+            "amount": None,
+            "currency": "ARS",
+            "movement_type": None,
+            "description": None,
+            "reply_text": "cambiando",
+        }
+
+        class FakeUser:
+            id = "user-1"
+
+        class FakeQuery:
+            def filter(self, *a, **k):
+                return self
+
+            def first(self):
+                return FakeUser()
+
+        class FakeSession:
+            def query(self, *a, **k):
+                return FakeQuery()
+
+            def close(self):
+                pass
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value=llm_result,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_last_movement",
+                new_callable=AsyncMock,
+            ) as mock_last,
+            patch(
+                "app.services.dispatcher.FinanceService.update_movement_category",
+            ) as mock_update,
+            patch("app.models.database.SessionLocal", return_value=FakeSession()),
+        ):
+            mock_last.return_value = LastRegisteredMovement(
+                movement_id="mov-1",
+                sender_phone="12345",
+                movement_type="egreso",
+                amount=Decimal("5000"),
+                currency="ARS",
+                description="supermercado",
+                category_name="Comida",
+            )
+            mock_update.return_value.status = "updated"
+            mock_update.return_value.message = "ok"
+
+            result = await process_incoming_message("12345", "cambia a Hogar")
+
+        assert result.service_invoked == "finance"
+        assert "Hogar" in result.reply_text
+
+    @pytest.mark.asyncio
+    async def test_change_category_no_last_movement(self):
+        llm_result = {
+            "intent": "change_category",
+            "category": "Hogar",
+            "reply_text": "cambiando",
+        }
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value=llm_result,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_last_movement",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await process_incoming_message("12345", "cambia a Hogar")
+
+        assert "movimiento reciente" in result.reply_text
+
+    @pytest.mark.asyncio
+    async def test_change_category_missing_category(self):
+        llm_result = {"intent": "change_category", "category": None, "reply_text": "x"}
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value=llm_result,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "cambia")
+
+        assert "categoría" in result.reply_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_category(self):
+
+        llm_result = {"intent": "delete_category", "category": "Comida", "reply_text": "x"}
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value=llm_result,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+            patch(
+                "app.services.dispatcher._handle_delete_category",
+                new_callable=AsyncMock,
+                return_value="✅ Categoría 'Comida' eliminada.",
+            ),
+        ):
+            result = await process_incoming_message("12345", "borrá categoría comida")
+
+        assert result.service_invoked == "finance"
+
+    @pytest.mark.asyncio
+    async def test_list_categories(self):
+        llm_result = {"intent": "list_categories", "reply_text": "x"}
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value=llm_result,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+            patch(
+                "app.services.dispatcher._handle_list_categories",
+                new_callable=AsyncMock,
+                return_value="📊 *Tus categorías:*\n• Comida",
+            ),
+        ):
+            result = await process_incoming_message("12345", "mis categorías")
+
+        assert result.service_invoked == "finance"
+        assert "Comida" in result.reply_text
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn: reminder data
+# ---------------------------------------------------------------------------
+
+class TestReminderMultiTurn:
+    @pytest.mark.asyncio
+    async def test_awaiting_reminder_data_completes(self):
+        from app.services.reminder import ReminderResult
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_reminder",
+                new_callable=AsyncMock,
+            ) as mock_pending,
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value={"reminder_day": 20},
+            ),
+            patch(
+                "app.services.dispatcher.ReminderService.create_reminder",
+                return_value=ReminderResult(status="created", message="ok"),
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            from app.services.conversation import PendingReminder
+            from decimal import Decimal
+
+            mock_pending.return_value = PendingReminder(
+                sender_phone="12345",
+                reminder_concept="cable",
+                reminder_day=None,
+                reminder_amount=Decimal("2500"),
+                reminder_currency="ARS",
+            )
+            result = await process_incoming_message("12345", "el 20")
+
+        assert result.service_invoked == "conversation"
+        assert "cable" in result.reply_text
+
+    @pytest.mark.asyncio
+    async def test_awaiting_reminder_data_no_pending(self):
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_reminder",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "el 20")
+
+        assert "contexto" in result.reply_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_awaiting_reminder_data_no_day_llm(self):
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_reminder",
+                new_callable=AsyncMock,
+            ) as mock_pending,
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value={"reminder_day": None},
+            ),
+        ):
+            from app.services.conversation import PendingReminder
+
+            mock_pending.return_value = PendingReminder(
+                sender_phone="12345",
+                reminder_concept="cable",
+                reminder_day=None,
+                reminder_amount=None,
+                reminder_currency="ARS",
+            )
+            result = await process_incoming_message("12345", "abc")
+
+        assert "día" in result.reply_text.lower() or "dia" in result.reply_text.lower()
+
+
+class TestRenameMultiTurn:
+    @pytest.mark.asyncio
+    async def test_awaiting_rename_completes(self):
+        from app.services.reminder import ReminderResult
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_rename",
+                new_callable=AsyncMock,
+            ) as mock_pending,
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ReminderService.create_reminder",
+                return_value=ReminderResult(status="created", message="ok"),
+            ),
+        ):
+            from app.services.conversation import PendingReminder
+            from decimal import Decimal
+
+            mock_pending.return_value = PendingReminder(
+                sender_phone="12345",
+                reminder_concept=None,
+                reminder_day=15,
+                reminder_amount=Decimal("1000"),
+                reminder_currency="ARS",
+            )
+            result = await process_incoming_message("12345", "nuevo nombre")
+
+        assert result.service_invoked == "conversation"
+
+    @pytest.mark.asyncio
+    async def test_awaiting_rename_no_pending(self):
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_rename",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "nuevo nombre")
+
+        assert "contexto" in result.reply_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_awaiting_rename_empty_text(self):
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_rename",
+                new_callable=AsyncMock,
+            ) as mock_pending,
+        ):
+            from app.services.conversation import PendingReminder
+
+            mock_pending.return_value = PendingReminder(
+                sender_phone="12345",
+                reminder_concept=None,
+                reminder_day=15,
+                reminder_amount=None,
+                reminder_currency="ARS",
+            )
+            result = await process_incoming_message("12345", "   ")
+
+        assert "nombre" in result.reply_text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Create reminder flow
+# ---------------------------------------------------------------------------
+
+class TestCreateReminder:
+    @pytest.mark.asyncio
+    async def test_create_reminder_with_day(self):
+        from app.services.reminder import ReminderResult
+
+        with reminder_patches(
+            "create_reminder",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.create_reminder",
+                return_value=ReminderResult(status="created", message="ok"),
+            ),
+        ):
+            result = await process_incoming_message("12345", "avisame del cable el 15")
+
+        assert result.service_invoked == "reminder"
+        assert "luz" in result.reply_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_reminder_missing_concept(self):
+        with reminder_patches(
+            "create_reminder",
+            reminder_concept=None,
+        ):
+            result = await process_incoming_message("12345", "recordame")
+
+        assert "nombre" in result.reply_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_reminder_missing_day_starts_multiturn(self):
+        with reminder_patches(
+            "create_reminder",
+            reminder_concept="cable",
+            reminder_day=None,
+            service_patch=patch(
+                "app.services.dispatcher.ConversationService.set_pending_reminder",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "avisame del cable")
+
+        assert result.service_invoked == "reminder"
+        assert "día" in result.reply_text.lower() or "dia" in result.reply_text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Legacy fallback branch
+# ---------------------------------------------------------------------------
+
+class TestLegacyBranch:
+    @pytest.mark.asyncio
+    async def test_unknown_intent_legacy_registers_movement(self):
+        llm_result = {
+            "intent": "some_unknown_intent",
+            "reply_text": "legacy",
+        }
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                side_effect=[llm_result, movement_llm_result(category=None)],
+            ),
+            patch(
+                "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
+                return_value=registered_result(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_movement",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "Gasté 5000 en supermercado")
+
+        assert result.service_invoked == "finance"
+        assert "5000" in result.reply_text
+
+    @pytest.mark.asyncio
+    async def test_legacy_fallback_safe_reply(self):
+        llm_result = {"intent": "unknown_thing", "reply_text": ""}
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                side_effect=[llm_result, greeting_llm_result()],
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "xyz")
+
+        assert result.reply_text
+
+
+# ---------------------------------------------------------------------------
+# /link more decisions
+# ---------------------------------------------------------------------------
+
+class TestLinkMoreDecisions:
+    def make_result(self, decision):
+        return DashboardLinkResult(decision)
+
+    @pytest.mark.asyncio
+    async def test_link_not_eligible(self):
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
+                return_value=self.make_result(DashboardLinkDecision.NOT_ELIGIBLE),
+            ),
+        ):
+            result = await process_incoming_message("12345", "/link")
+
+        assert result.service_invoked == "dashboard_link"
+        assert "cuenta vinculada" in result.reply_text
+
+    @pytest.mark.asyncio
+    async def test_link_error(self):
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
+                return_value=self.make_result(DashboardLinkDecision.ERROR),
+            ),
+        ):
+            result = await process_incoming_message("12345", "/link")
+
+        assert result.service_invoked == "dashboard_link"
+        assert "enlace" in result.reply_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_link_suppress_response(self):
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
+                return_value=self.make_result(DashboardLinkDecision.SUPPRESS_RESPONSE),
+            ),
+        ):
+            result = await process_incoming_message("12345", "/link")
+
+        assert result.service_invoked == "dashboard_link"
+        assert result.reply_text == ""
+
+
+# ---------------------------------------------------------------------------
+# More multi-turn / reminder edge cases
+# ---------------------------------------------------------------------------
+
+class TestReminderMultiTurnMore:
+    @pytest.mark.asyncio
+    async def test_awaiting_reminder_extracts_day_from_text(self):
+        """When LLM returns no day, dispatcher extracts a number from the text."""
+        from app.services.conversation import PendingReminder
+        from app.services.reminder import ReminderResult
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_reminder",
+                new_callable=AsyncMock,
+            ) as mock_pending,
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value={"reminder_day": None},
+            ),
+            patch(
+                "app.services.dispatcher.ReminderService.create_reminder",
+                return_value=ReminderResult(status="created", message="ok"),
+            ),
+        ):
+            mock_pending.return_value = PendingReminder(
+                sender_phone="12345",
+                reminder_concept="cable",
+                reminder_day=None,
+                reminder_amount=None,
+                reminder_currency="ARS",
+            )
+            result = await process_incoming_message("12345", "el 20")
+
+        assert result.service_invoked == "conversation"
+        assert "20" in result.reply_text
+
+    @pytest.mark.asyncio
+    async def test_update_reminder_find_by_title_raises(self):
+        from app.services.reminder import ReminderResult
+
+        with reminder_patches(
+            "update_reminder",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.update_reminder",
+                return_value=ReminderResult(status="updated", message="ok"),
+            ),
+        ):
+            with patch(
+                "app.services.dispatcher.ReminderService.find_by_title",
+                side_effect=Exception("db down"),
+            ):
+                result = await process_incoming_message("12345", "cambia luz")
+
+        assert result.service_invoked == "reminder"
+
+    @pytest.mark.asyncio
+    async def test_pause_reminder_by_title(self):
+        from app.services.reminder import ReminderResult
+
+        with reminder_patches(
+            "pause_reminder",
+            reminder_concept="luz",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.pause_by_title",
+                return_value=ReminderResult(status="paused", message="ok"),
+            ),
+        ):
+            result = await process_incoming_message("12345", "pausá luz")
+
+        assert result.service_invoked == "reminder"
+
+    @pytest.mark.asyncio
+    async def test_create_reminder_duplicate_title_sets_rename(self):
+        from app.services.reminder import ReminderResult
+
+        with reminder_patches(
+            "create_reminder",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.create_reminder",
+                return_value=ReminderResult(status="duplicate_title", message="Ya existe"),
+            ),
+        ):
+            with patch(
+                "app.services.dispatcher.ConversationService.set_pending_rename",
+                new_callable=AsyncMock,
+            ) as mock_rename:
+                result = await process_incoming_message("12345", "avisame del cable el 15")
+
+        assert result.service_invoked == "reminder"
+        mock_rename.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Legacy branch extra paths
+# ---------------------------------------------------------------------------
+
+class TestLegacyBranchMore:
+    @pytest.mark.asyncio
+    async def test_legacy_delete_category(self):
+        llm_first = {"intent": "unknown_intent", "reply_text": ""}
+        llm_second = {"intent": "delete_category", "category": "Comida", "reply_text": ""}
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                side_effect=[llm_first, llm_second],
+            ),
+            patch(
+                "app.services.dispatcher._handle_delete_category",
+                new_callable=AsyncMock,
+                return_value="✅ Categoría 'Comida' eliminada.",
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "borrá comida")
+
+        assert result.service_invoked == "finance"
+
+    @pytest.mark.asyncio
+    async def test_legacy_list_categories(self):
+        llm_first = {"intent": "unknown_intent", "reply_text": ""}
+        llm_second = {"intent": "list_categories", "reply_text": ""}
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                side_effect=[llm_first, llm_second],
+            ),
+            patch(
+                "app.services.dispatcher._handle_list_categories",
+                new_callable=AsyncMock,
+                return_value="📊 *Tus categorías:*",
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "mis categorías")
+
+        assert result.service_invoked == "finance"
+
+    @pytest.mark.asyncio
+    async def test_legacy_confirm_category(self):
+        llm_first = {"intent": "unknown_intent", "reply_text": ""}
+        llm_second = {"intent": "confirm_category", "reply_text": ""}
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                side_effect=[llm_first, llm_second],
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "si")
+
+        assert result.service_invoked == "conversation"
+        assert "pendiente" in result.reply_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_legacy_movement_with_category_sets_pending(self):
+        llm_first = {"intent": "unknown_intent", "reply_text": ""}
+        llm_second = movement_llm_result(category="Comida")
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                side_effect=[llm_first, llm_second],
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_pending_movement",
+                new_callable=AsyncMock,
+            ) as mock_pending,
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "Gasté 5000", "wamid.9")
+
+        assert result.service_invoked == "conversation"
+        assert "categoría" in result.reply_text.lower()
+        mock_pending.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Direct category handler unit tests (with fake session)
+# ---------------------------------------------------------------------------
+
+class TestCategoryHandlers:
+    """Direct tests for _handle_delete_category / _handle_list_categories."""
+
+    @pytest.fixture
+    def fake_session_factory(self):
+        class FakeUser:
+            id = "user-1"
+
+        class FakeQuery:
+            def filter(self, *a, **k):
+                return self
+
+            def first(self):
+                return FakeUser()
+
+        class FakeSession:
+            def query(self, *a, **k):
+                return FakeQuery()
+
+            def close(self):
+                pass
+
+        return lambda: FakeSession()
+
+    @pytest.mark.asyncio
+    async def test_handle_delete_category_deleted(self, fake_session_factory):
+        from app.services.dispatcher import _handle_delete_category
+        from app.services.finance import CategoryResult
+
+        with (
+            patch("app.models.database.SessionLocal", fake_session_factory),
+            patch(
+                "app.services.dispatcher.FinanceService.delete_category",
+                return_value=CategoryResult(status="deleted", message="ok", category_name="Comida"),
+            ),
+        ):
+            reply = await _handle_delete_category("12345", {"category": "Comida"})
+
+        assert "Comida" in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_delete_category_not_found(self, fake_session_factory):
+        from app.services.dispatcher import _handle_delete_category
+        from app.services.finance import CategoryResult
+
+        with (
+            patch("app.models.database.SessionLocal", fake_session_factory),
+            patch(
+                "app.services.dispatcher.FinanceService.delete_category",
+                return_value=CategoryResult(status="not_found", message="nf"),
+            ),
+        ):
+            reply = await _handle_delete_category("12345", {"category": "Comida"})
+
+        assert "Comida" in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_delete_category_error(self, fake_session_factory):
+        from app.services.dispatcher import _handle_delete_category
+        from app.services.finance import CategoryResult
+
+        with (
+            patch("app.models.database.SessionLocal", fake_session_factory),
+            patch(
+                "app.services.dispatcher.FinanceService.delete_category",
+                return_value=CategoryResult(status="error", message="err"),
+            ),
+        ):
+            reply = await _handle_delete_category("12345", {"category": "Comida"})
+
+        assert "problema" in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_delete_category_missing_name(self, fake_session_factory):
+        from app.services.dispatcher import _handle_delete_category
+
+        with patch("app.models.database.SessionLocal", fake_session_factory):
+            reply = await _handle_delete_category("12345", {"category": None})
+
+        assert "categoría" in reply.lower()
+
+    @pytest.mark.asyncio
+    async def test_handle_list_categories_ok(self, fake_session_factory):
+        from app.services.dispatcher import _handle_list_categories
+        from app.services.finance import CategoriesListResult
+
+        with (
+            patch("app.models.database.SessionLocal", fake_session_factory),
+            patch(
+                "app.services.dispatcher.FinanceService.get_categories_with_totals",
+                return_value=CategoriesListResult(status="ok", message="ok"),
+            ),
+        ):
+            reply = await _handle_list_categories("12345")
+
+        assert "No tenés categorías" in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_list_categories_error(self, fake_session_factory):
+        from app.services.dispatcher import _handle_list_categories
+        from app.services.finance import CategoriesListResult
+
+        with (
+            patch("app.models.database.SessionLocal", fake_session_factory),
+            patch(
+                "app.services.dispatcher.FinanceService.get_categories_with_totals",
+                return_value=CategoriesListResult(status="error", message="err"),
+            ),
+        ):
+            reply = await _handle_list_categories("12345")
+
+        assert "problema" in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_list_categories_user_not_found(self):
+        from app.services.dispatcher import _handle_list_categories
+
+        class FakeQuery:
+            def filter(self, *a, **k):
+                return self
+
+            def first(self):
+                return None
+
+        class FakeSession:
+            def query(self, *a, **k):
+                return FakeQuery()
+
+            def close(self):
+                pass
+
+        with patch("app.models.database.SessionLocal", lambda: FakeSession()):
+            reply = await _handle_list_categories("12345")
+
+        assert "cuenta" in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_delete_category_user_not_found(self):
+        from app.services.dispatcher import _handle_delete_category
+        from app.services.finance import CategoryResult
+
+        class FakeQuery:
+            def filter(self, *a, **k):
+                return self
+
+            def first(self):
+                return None
+
+        class FakeSession:
+            def query(self, *a, **k):
+                return FakeQuery()
+
+            def close(self):
+                pass
+
+        with (
+            patch("app.models.database.SessionLocal", lambda: FakeSession()),
+            patch(
+                "app.services.dispatcher.FinanceService.delete_category",
+                return_value=CategoryResult(status="deleted", message="ok"),
+            ),
+        ):
+            reply = await _handle_delete_category("12345", {"category": "Comida"})
+
+        assert "cuenta" in reply
+
+
+# ---------------------------------------------------------------------------
+# _handle_list_reminders / _handle_change_category / _update_ultimo_mensaje
+# ---------------------------------------------------------------------------
+
+class TestReminderListHandler:
+    @pytest.fixture
+    def fake_session_factory(self):
+        class FakeUser:
+            id = "user-1"
+
+        class FakeQuery:
+            def filter(self, *a, **k):
+                return self
+
+            def first(self):
+                return FakeUser()
+
+        class FakeSession:
+            def query(self, *a, **k):
+                return FakeQuery()
+
+            def close(self):
+                pass
+
+        return lambda: FakeSession()
+
+    @pytest.mark.asyncio
+    async def test_list_reminders_success(self, fake_session_factory):
+        from app.services.dispatcher import _handle_list_reminders
+        from app.services.reminder import ReminderListResult
+
+        with (
+            patch("app.models.database.SessionLocal", fake_session_factory),
+            patch(
+                "app.services.dispatcher.ReminderService.list_reminders_all",
+                return_value=ReminderListResult(
+                    status="ok",
+                    message="ok",
+                    reminders=[{"titulo": "Luz", "dia_del_mes": 15, "monto": 5000, "moneda": "ARS", "estado": "activo"}],
+                ),
+            ),
+        ):
+            reply = await _handle_list_reminders("12345")
+
+        assert "Luz" in reply
+
+    @pytest.mark.asyncio
+    async def test_list_reminders_user_not_found(self):
+        from app.services.dispatcher import _handle_list_reminders
+
+        class FakeQuery:
+            def filter(self, *a, **k):
+                return self
+
+            def first(self):
+                return None
+
+        class FakeSession:
+            def query(self, *a, **k):
+                return FakeQuery()
+
+            def close(self):
+                pass
+
+        with patch("app.models.database.SessionLocal", lambda: FakeSession()):
+            reply = await _handle_list_reminders("12345")
+
+        assert "cuenta" in reply
+
+    @pytest.mark.asyncio
+    async def test_list_reminders_error(self, fake_session_factory):
+        from app.services.dispatcher import _handle_list_reminders
+
+        with (
+            patch("app.models.database.SessionLocal", fake_session_factory),
+            patch(
+                "app.services.dispatcher.ReminderService.list_reminders_all",
+                side_effect=Exception("boom"),
+            ),
+        ):
+            reply = await _handle_list_reminders("12345")
+
+        assert "problema" in reply
+
+
+class TestChangeCategoryEdgeCases:
+    def make_session(self, user=None):
+        class FakeUser:
+            id = "user-1"
+
+        class FakeQuery:
+            def filter(self, *a, **k):
+                return self
+
+            def first(self):
+                return FakeUser() if user is not None else None
+
+        class FakeSession:
+            def query(self, *a, **k):
+                return FakeQuery()
+
+            def close(self):
+                pass
+
+        return lambda: FakeSession()
+
+    @pytest.mark.asyncio
+    async def test_change_category_user_not_found(self):
+        from app.services.dispatcher import _handle_change_category
+
+        with (
+            patch("app.models.database.SessionLocal", self.make_session(user=None)),
+            patch(
+                "app.services.dispatcher.ConversationService.get_last_movement",
+                new_callable=AsyncMock,
+            ) as mock_last,
+        ):
+            from app.services.conversation import LastRegisteredMovement
+            from decimal import Decimal
+
+            mock_last.return_value = LastRegisteredMovement(
+                movement_id="mov-1",
+                sender_phone="12345",
+                movement_type="egreso",
+                amount=Decimal("5000"),
+                currency="ARS",
+                description="x",
+                category_name="Comida",
+            )
+            reply = await _handle_change_category("12345", {"category": "Hogar"})
+
+        assert "cuenta" in reply
+
+    @pytest.mark.asyncio
+    async def test_change_category_not_found(self):
+        from app.services.dispatcher import _handle_change_category
+
+        with (
+            patch("app.models.database.SessionLocal", self.make_session(user=object())),
+            patch(
+                "app.services.dispatcher.ConversationService.get_last_movement",
+                new_callable=AsyncMock,
+            ) as mock_last,
+            patch(
+                "app.services.dispatcher.FinanceService.update_movement_category",
+            ) as mock_update,
+        ):
+            from app.services.conversation import LastRegisteredMovement
+            from decimal import Decimal
+
+            mock_last.return_value = LastRegisteredMovement(
+                movement_id="mov-1",
+                sender_phone="12345",
+                movement_type="egreso",
+                amount=Decimal("5000"),
+                currency="ARS",
+                description="x",
+                category_name="Comida",
+            )
+            mock_update.return_value.status = "not_found"
+            reply = await _handle_change_category("12345", {"category": "Hogar"})
+
+        assert "No encontré el movimiento" in reply
+
+    @pytest.mark.asyncio
+    async def test_change_category_error(self):
+        from app.services.dispatcher import _handle_change_category
+
+        with (
+            patch("app.models.database.SessionLocal", self.make_session(user=object())),
+            patch(
+                "app.services.dispatcher.ConversationService.get_last_movement",
+                new_callable=AsyncMock,
+            ) as mock_last,
+            patch(
+                "app.services.dispatcher.FinanceService.update_movement_category",
+            ) as mock_update,
+        ):
+            from app.services.conversation import LastRegisteredMovement
+            from decimal import Decimal
+
+            mock_last.return_value = LastRegisteredMovement(
+                movement_id="mov-1",
+                sender_phone="12345",
+                movement_type="egreso",
+                amount=Decimal("5000"),
+                currency="ARS",
+                description="x",
+                category_name="Comida",
+            )
+            mock_update.return_value.status = "error"
+            reply = await _handle_change_category("12345", {"category": "Hogar"})
+
+        assert "problema" in reply
+
+
+class TestUpdateUltimoMensaje:
+    def test_success_commits(self):
+        from app.services.dispatcher import _update_ultimo_mensaje
+
+        class FakeQuery:
+            def filter(self, *a, **k):
+                return self
+
+            def update(self, *a, **k):
+                return 1
+
+        class FakeSession:
+            def __init__(self):
+                self.committed = False
+
+            def query(self, *a, **k):
+                return FakeQuery()
+
+            def commit(self):
+                self.committed = True
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+
+        session = FakeSession()
+        with patch("app.models.database.SessionLocal", lambda: session):
+            _update_ultimo_mensaje("12345")
+
+        assert session.committed is True
+
+    def test_error_rolls_back(self):
+        from app.services.dispatcher import _update_ultimo_mensaje
+
+        class FakeQuery:
+            def filter(self, *a, **k):
+                return self
+
+            def update(self, *a, **k):
+                raise Exception("db down")
+
+        class FakeSession:
+            def __init__(self):
+                self.rolled = False
+
+            def query(self, *a, **k):
+                return FakeQuery()
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                self.rolled = True
+
+            def close(self):
+                pass
+
+        session = FakeSession()
+        with patch("app.models.database.SessionLocal", lambda: session):
+            _update_ultimo_mensaje("12345")
+
+        assert session.rolled is True
+
+
+class TestMovementNoCategory:
+    @pytest.mark.asyncio
+    async def test_expense_without_category_uses_whatsapp_text_registration(self):
+        """_register_and_reply_with_hint falls back to register_movement_from_whatsapp_text."""
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value=movement_llm_result(category=None),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
+                return_value=registered_result(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_movement",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "Gasté 5000 en supermercado", "wamid.10")
+
+        assert result.service_invoked == "finance"
+        assert "5000" in result.reply_text

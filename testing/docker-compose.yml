@@ -1,0 +1,24 @@
+# testing/docker-compose.yml
+services:
+  streamlit:
+    build:
+      context: ..
+      dockerfile: testing/Dockerfile
+    ports:
+      - "8501:8501"
+    volumes:
+      - ..:/app
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=sqlite:///./testing_luka.db
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    restart: unless-stopped

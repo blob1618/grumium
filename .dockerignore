@@ -1,0 +1,19 @@
+# Raíz del context de build (producción y testing). Excluir entornos y artefactos.
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+.ruff_cache/
+*.db
+.env
+.agent/
+.claude/
+.cline/
+.devin/
+.opencode/
+.vscode/
+.windsurf/
+.agents/
