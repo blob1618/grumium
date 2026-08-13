@@ -16,4 +16,4 @@ COPY . /app/
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "testing/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
+CMD ["streamlit", "run", "testing/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]

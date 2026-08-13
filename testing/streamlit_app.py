@@ -1,18 +1,32 @@
-# testing/app.py
+# testing/streamlit_app.py
 """Luka Testing Environment — Streamlit entry point."""
 
+import os
 import sys
 from pathlib import Path
 
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import streamlit as st
+# Cargar el .env de la raíz (API keys de LLM, etc.) ANTES de importar submódulos,
+# igual que app/main.py. En Docker las keys llegan vía env_file del compose.
+from dotenv import load_dotenv  # noqa: E402
 
-from testing.config.settings import TestingConfig
-from testing.components.sidebar import render_sidebar
-from testing.components.chat import render_chat
-from testing.services.user_simulator import UserSimulator
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+# Testing environment always uses its isolated SQLite database.
+os.environ["DATABASE_URL"] = "sqlite:///./testing_luka.db"
+
+from app.models.database import Base, engine  # noqa: E402
+
+Base.metadata.create_all(bind=engine)
+
+import streamlit as st  # noqa: E402
+
+from testing.config.settings import TestingConfig  # noqa: E402
+from testing.components.sidebar import render_sidebar  # noqa: E402
+from testing.components.chat import render_chat  # noqa: E402
+from testing.services.user_simulator import UserSimulator  # noqa: E402
 
 st.set_page_config(
     page_title="Luka Testing",
@@ -49,15 +63,6 @@ if "user_simulator_initialized" not in st.session_state:
 # Render sidebar and get config
 config = render_sidebar()
 
-# Handle user simulation setup
-if config.mode == "webhook" and config.user_registered:
-    if not st.session_state.user_simulator_initialized or st.session_state.get("reset_db_requested"):
-        from app.models.database import SessionLocal
-        sim = UserSimulator(SessionLocal)
-        sim.create_test_user(config.phone, config.user_name)
-        st.session_state.user_simulator_initialized = True
-        st.session_state.pop("reset_db_requested", None)
-
 # Handle DB reset
 if st.session_state.get("reset_db_requested"):
     from app.models.database import SessionLocal
@@ -66,6 +71,14 @@ if st.session_state.get("reset_db_requested"):
     st.session_state.user_simulator_initialized = False
     st.session_state.pop("reset_db_requested", None)
     st.toast("Base de datos reseteada")
+
+# Handle user simulation setup
+if config.mode == "webhook" and config.user_registered:
+    if not st.session_state.user_simulator_initialized:
+        from app.models.database import SessionLocal
+        sim = UserSimulator(SessionLocal)
+        sim.create_test_user(config.phone, config.user_name)
+        st.session_state.user_simulator_initialized = True
 
 # Render chat
 render_chat(config)

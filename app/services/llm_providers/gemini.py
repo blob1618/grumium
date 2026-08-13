@@ -15,8 +15,8 @@ class GeminiProvider(LLMProvider):
     """
 
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    DEFAULT_MODEL = "gemini-flash-latest"
-    FALLBACK_MODELS = ("gemini-2.5-flash-lite",)
+    DEFAULT_MODEL = "gemini-3.6-flash"
+    FALLBACK_MODELS = ("gemini-3.5-flash", "gemini-3-flash-preview")
     MAX_RETRIES_PER_MODEL = 2
 
     # =========================================================================

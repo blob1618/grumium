@@ -26,7 +26,7 @@ Entorno de testing interactivo basado en Streamlit para probar el asistente fina
 | `Dockerfile` | Python 3.11-slim + Streamlit |
 | `docker-compose.yml` | Servicios streamlit (8501) + redis (6380) |
 | `requirements.txt` | `-r ../requirements.txt` + `streamlit` |
-| `app.py` | Entry point; estado, sidebar, chat, user simulator, tema obsidiana |
+| `streamlit_app.py` | Entry point; inicializa SQLite aislada, estado, sidebar, chat, user simulator, tema obsidiana |
 | `config/settings.py` | Dataclasses `TestingConfig` y `ChatMessage` |
 | `services/direct_mode.py` | `DirectModeService` — llama a `LLMService` directo (sin dispatcher) |
 | `services/webhook_mode.py` | `WebhookModeService` — simula el flujo completo vía dispatcher |
@@ -55,7 +55,21 @@ Excluye `.venv/`, `.git/`, caches y artefactos del contexto de build. Acelera dr
 - **Paquete `testing/`: 100% de cobertura** (services, components, config).
   - 8 archivos de test + `conftest.py` (SQLite in-memory).
   - `test_components_ui.py` mockea el módulo `streamlit` para cubrir el render.
-- **Suite completa del repo: 444 passed.**
+- **Suite completa del repo: 445 passed.**
+
+### 6. Artefactos Playwright
+
+Las capturas de validación quedan en `artifacts/`, incluyendo:
+
+- `streamlit-import-error-before-fix.png` — error original de shadowing de `app`.
+- `scenario-webhook-no-table-before-fix.png` — error original de SQLite sin tablas.
+- `streamlit-after-fix-loading.png` — carga inicial correcta.
+- `scenario-direct-mode-mistral-success.png` — respuesta LLM directa correcta.
+- `scenario-direct-mode-llm-error.png` — error de provider manejado sin crash.
+- `scenario-webhook-unregistered-invitation-success.png` — invitación de usuario no registrado.
+- `scenario-webhook-registered-expense-success.png` — persistencia de movimiento.
+- `scenario-reset-db-data-cleared-success.png` — reset verificado contra SQLite.
+- `scenario-mobile-layout-success.png` — layout móvil.
 
 ---
 
@@ -73,8 +87,8 @@ Excluye `.venv/`, `.git/`, caches y artefactos del contexto de build. Acelera dr
 podman machine list
 podman machine start podman-machine   # si está apagada
 
-# 2. Construir la imagen (el primer build baja python:3.11-slim + instala deps)
-podman build --progress=plain -t luka-testing -f testing/Dockerfile .
+# 2. Construir imagen Compose (el primer build baja python:3.11-slim + instala deps)
+podman compose -f testing/docker-compose.yml build
 
 # 3. Levantar la stack (Streamlit + Redis)
 podman compose -f testing/docker-compose.yml up -d
@@ -103,7 +117,7 @@ pip install -r testing/requirements.txt
 Copy-Item .env.example .env   # ajustar LLM_API_KEY / GEMINI_API_KEY
 
 # 3. Correr Streamlit
-streamlit run testing/app.py --server.port=8501
+streamlit run testing/streamlit_app.py --server.port=8501
 
 # 4. Abrir http://localhost:8501
 ```
