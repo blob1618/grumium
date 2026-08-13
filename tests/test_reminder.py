@@ -615,7 +615,7 @@ class TestConceptValidation:
     """Tests for _validate_reminder_concept and _extract_concept_from_text."""
 
     def setup_method(self):
-        from app.main import _validate_reminder_concept, _extract_concept_from_text
+        from app.services.dispatcher import _validate_reminder_concept, _extract_concept_from_text
         self.validate = _validate_reminder_concept
         self.extract = _extract_concept_from_text
 

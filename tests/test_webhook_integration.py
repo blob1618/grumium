@@ -140,10 +140,10 @@ def create_category(session, user_id, nombre="supermercado"):
 
 def post_webhook_with_real_finance(payload, llm_result, expects_category_confirmation=False):
     with (
-        patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+        patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as process_message,
         patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
-        patch("app.main.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_is_awaiting,
-        patch("app.main.ConversationService.get_pending_movement", new_callable=AsyncMock) as mock_get_pending,
+        patch("app.services.dispatcher.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_is_awaiting,
+        patch("app.services.dispatcher.ConversationService.get_pending_movement", new_callable=AsyncMock) as mock_get_pending,
     ):
         if expects_category_confirmation:
             mock_is_awaiting.return_value = True
@@ -354,16 +354,16 @@ class TestReminderMultiTurn:
         }
 
         with (
-            patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+            patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as process_message,
             patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
-            patch("app.main.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_cat,
-            patch("app.main.ConversationService.get_pending_movement", new_callable=AsyncMock),
-            patch("app.main.ConversationService.is_awaiting_reminder_data", new_callable=AsyncMock) as mock_await_rem,
-            patch("app.main.ConversationService.is_awaiting_rename", new_callable=AsyncMock) as mock_await_rename,
-            patch("app.main.ConversationService.get_pending_reminder", new_callable=AsyncMock) as mock_get_rem,
-            patch("app.main.ConversationService.set_pending_reminder", new_callable=AsyncMock) as mock_set_rem,
-            patch("app.main.ConversationService.set_pending_rename", new_callable=AsyncMock),
-            patch("app.main.ConversationService.clear_state", new_callable=AsyncMock) as mock_clear,
+            patch("app.services.dispatcher.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_cat,
+            patch("app.services.dispatcher.ConversationService.get_pending_movement", new_callable=AsyncMock),
+            patch("app.services.dispatcher.ConversationService.is_awaiting_reminder_data", new_callable=AsyncMock) as mock_await_rem,
+            patch("app.services.dispatcher.ConversationService.is_awaiting_rename", new_callable=AsyncMock) as mock_await_rename,
+            patch("app.services.dispatcher.ConversationService.get_pending_reminder", new_callable=AsyncMock) as mock_get_rem,
+            patch("app.services.dispatcher.ConversationService.set_pending_reminder", new_callable=AsyncMock) as mock_set_rem,
+            patch("app.services.dispatcher.ConversationService.set_pending_rename", new_callable=AsyncMock),
+            patch("app.services.dispatcher.ConversationService.clear_state", new_callable=AsyncMock) as mock_clear,
         ):
             mock_cat.return_value = False
             mock_await_rem.return_value = False
@@ -392,16 +392,16 @@ class TestReminderMultiTurn:
         )
 
         with (
-            patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message2,
+            patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as process_message2,
             patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message2,
-            patch("app.main.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_cat2,
-            patch("app.main.ConversationService.get_pending_movement", new_callable=AsyncMock),
-            patch("app.main.ConversationService.is_awaiting_reminder_data", new_callable=AsyncMock) as mock_await_rem2,
-            patch("app.main.ConversationService.is_awaiting_rename", new_callable=AsyncMock) as mock_await_rename2,
-            patch("app.main.ConversationService.get_pending_reminder", new_callable=AsyncMock) as mock_get_rem2,
-            patch("app.main.ConversationService.set_pending_reminder", new_callable=AsyncMock),
-            patch("app.main.ConversationService.set_pending_rename", new_callable=AsyncMock),
-            patch("app.main.ConversationService.clear_state", new_callable=AsyncMock) as mock_clear2,
+            patch("app.services.dispatcher.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_cat2,
+            patch("app.services.dispatcher.ConversationService.get_pending_movement", new_callable=AsyncMock),
+            patch("app.services.dispatcher.ConversationService.is_awaiting_reminder_data", new_callable=AsyncMock) as mock_await_rem2,
+            patch("app.services.dispatcher.ConversationService.is_awaiting_rename", new_callable=AsyncMock) as mock_await_rename2,
+            patch("app.services.dispatcher.ConversationService.get_pending_reminder", new_callable=AsyncMock) as mock_get_rem2,
+            patch("app.services.dispatcher.ConversationService.set_pending_reminder", new_callable=AsyncMock),
+            patch("app.services.dispatcher.ConversationService.set_pending_rename", new_callable=AsyncMock),
+            patch("app.services.dispatcher.ConversationService.clear_state", new_callable=AsyncMock) as mock_clear2,
         ):
             mock_cat2.return_value = False
             mock_await_rem2.return_value = True
@@ -449,16 +449,16 @@ class TestReminderMultiTurn:
         }
 
         with (
-            patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+            patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as process_message,
             patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
-            patch("app.main.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_cat,
-            patch("app.main.ConversationService.get_pending_movement", new_callable=AsyncMock),
-            patch("app.main.ConversationService.is_awaiting_reminder_data", new_callable=AsyncMock) as mock_await_rem,
-            patch("app.main.ConversationService.is_awaiting_rename", new_callable=AsyncMock) as mock_await_rename,
-            patch("app.main.ConversationService.get_pending_reminder", new_callable=AsyncMock),
-            patch("app.main.ConversationService.set_pending_reminder", new_callable=AsyncMock),
-            patch("app.main.ConversationService.set_pending_rename", new_callable=AsyncMock),
-            patch("app.main.ConversationService.clear_state", new_callable=AsyncMock),
+            patch("app.services.dispatcher.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_cat,
+            patch("app.services.dispatcher.ConversationService.get_pending_movement", new_callable=AsyncMock),
+            patch("app.services.dispatcher.ConversationService.is_awaiting_reminder_data", new_callable=AsyncMock) as mock_await_rem,
+            patch("app.services.dispatcher.ConversationService.is_awaiting_rename", new_callable=AsyncMock) as mock_await_rename,
+            patch("app.services.dispatcher.ConversationService.get_pending_reminder", new_callable=AsyncMock),
+            patch("app.services.dispatcher.ConversationService.set_pending_reminder", new_callable=AsyncMock),
+            patch("app.services.dispatcher.ConversationService.set_pending_rename", new_callable=AsyncMock),
+            patch("app.services.dispatcher.ConversationService.clear_state", new_callable=AsyncMock),
         ):
             mock_cat.return_value = False
             mock_await_rem.return_value = False

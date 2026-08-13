@@ -81,12 +81,12 @@ def post_webhook_with_mocks(llm_result, finance_result=None, messages=None):
 
     with (
         patch(
-            "app.main.OnboardingService.prepare_whatsapp_message",
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
             return_value=known_user_result(),
         ),
-        patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+        patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as process_message,
         patch(
-            "app.main.FinanceService.register_movement_from_whatsapp_text",
+            "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
             autospec=True,
         ) as register_movement,
         patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
@@ -315,8 +315,8 @@ def test_handle_webhook_list_reminders_routes_to_reminder_service():
     }
 
     with (
-        patch("app.main._update_ultimo_mensaje", lambda phone: None),
-        patch("app.main._handle_list_reminders", return_value="📌 *Tus recordatorios activos:*\n• Luz") as list_reminders,
+        patch("app.services.dispatcher._update_ultimo_mensaje", lambda phone: None),
+        patch("app.services.dispatcher._handle_list_reminders", return_value="📌 *Tus recordatorios activos:*\n• Luz") as list_reminders,
     ):
         response, _, _, send_message = post_webhook_with_mocks(llm_result=llm_result)
 
@@ -337,8 +337,8 @@ def test_handle_webhook_pause_reminder_routes_to_reminder_service():
     from app.services.reminder import ReminderResult
 
     with (
-        patch("app.main._update_ultimo_mensaje", lambda phone: None),
-        patch("app.main.ReminderService.pause_reminder") as pause_reminder,
+        patch("app.services.dispatcher._update_ultimo_mensaje", lambda phone: None),
+        patch("app.services.dispatcher.ReminderService.pause_reminder") as pause_reminder,
     ):
         pause_reminder.return_value = ReminderResult(status="paused", message="ok")
         response, _, _, send_message = post_webhook_with_mocks(llm_result=llm_result)
@@ -360,8 +360,8 @@ def test_handle_webhook_update_reminder_routes_to_reminder_service():
     from app.services.reminder import ReminderResult
 
     with (
-        patch("app.main._update_ultimo_mensaje", lambda phone: None),
-        patch("app.main.ReminderService.update_reminder") as update_reminder,
+        patch("app.services.dispatcher._update_ultimo_mensaje", lambda phone: None),
+        patch("app.services.dispatcher.ReminderService.update_reminder") as update_reminder,
     ):
         update_reminder.return_value = ReminderResult(status="updated", message="ok")
         response, _, _, send_message = post_webhook_with_mocks(llm_result=llm_result)
@@ -381,8 +381,8 @@ def test_handle_webhook_delete_reminder_routes_to_reminder_service():
     from app.services.reminder import ReminderResult
 
     with (
-        patch("app.main._update_ultimo_mensaje", lambda phone: None),
-        patch("app.main.ReminderService.delete_reminder") as delete_reminder,
+        patch("app.services.dispatcher._update_ultimo_mensaje", lambda phone: None),
+        patch("app.services.dispatcher.ReminderService.delete_reminder") as delete_reminder,
     ):
         delete_reminder.return_value = ReminderResult(status="deleted", message="ok")
         response, _, _, send_message = post_webhook_with_mocks(llm_result=llm_result)
@@ -433,9 +433,9 @@ def test_handle_webhook_status_update_without_messages_does_not_fail():
     )
 
     with (
-        patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+        patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as process_message,
         patch(
-            "app.main.FinanceService.register_movement_from_whatsapp_text",
+            "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
             autospec=True,
         ) as register_movement,
         patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
@@ -460,20 +460,20 @@ def test_unknown_user_sends_one_onboarding_message_without_calling_services():
 
     with (
         patch(
-            "app.main.OnboardingService.prepare_whatsapp_message",
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
             return_value=onboarding_result,
         ) as prepare_onboarding,
-        patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+        patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as process_message,
         patch(
-            "app.main.FinanceService.register_movement_from_whatsapp_text",
+            "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
             autospec=True,
         ) as register_movement,
         patch(
-            "app.main.ReminderService.create_reminder",
+            "app.services.dispatcher.ReminderService.create_reminder",
             autospec=True,
         ) as create_reminder,
         patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
-        patch("app.main._update_ultimo_mensaje") as update_last_message,
+        patch("app.services.dispatcher._update_ultimo_mensaje") as update_last_message,
     ):
         response = client.post("/webhook", json=payload)
 
@@ -500,12 +500,12 @@ def test_unknown_user_suppression_does_not_call_llm_or_send_message(decision):
 
     with (
         patch(
-            "app.main.OnboardingService.prepare_whatsapp_message",
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
             return_value=OnboardingResult(decision),
         ),
-        patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+        patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as process_message,
         patch(
-            "app.main.FinanceService.register_movement_from_whatsapp_text",
+            "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
             autospec=True,
         ) as register_movement,
         patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
@@ -523,16 +523,16 @@ def test_onboarding_database_error_does_not_reach_llm():
 
     with (
         patch(
-            "app.main.OnboardingService.prepare_whatsapp_message",
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
             return_value=OnboardingResult(OnboardingDecision.ERROR),
         ),
-        patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+        patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as process_message,
         patch(
-            "app.main.FinanceService.register_movement_from_whatsapp_text",
+            "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
             autospec=True,
         ) as register_movement,
         patch(
-            "app.main.ReminderService.create_reminder",
+            "app.services.dispatcher.ReminderService.create_reminder",
             autospec=True,
         ) as create_reminder,
         patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
@@ -566,7 +566,7 @@ class TestWebhookCreateReminder:
         # Mock LLMService
         async def mock_process(text):
             return llm_response
-        monkeypatch.setattr("app.main.LLMService.process_message", mock_process)
+        monkeypatch.setattr("app.services.dispatcher.LLMService.process_message", mock_process)
         monkeypatch.setattr(
             OnboardingService,
             "prepare_whatsapp_message",
@@ -586,7 +586,7 @@ class TestWebhookCreateReminder:
         monkeypatch.setattr("app.main.send_whatsapp_message", mock_send)
 
         # Mock update_ultimo_mensaje as no-op for simplicity in webhook route test
-        monkeypatch.setattr("app.main._update_ultimo_mensaje", lambda phone: None)
+        monkeypatch.setattr("app.services.dispatcher._update_ultimo_mensaje", lambda phone: None)
 
         payload = make_webhook_payload(messages=[make_text_message("recordame pagar la luz el 15")])
         response = client.post("/webhook", json=payload)
@@ -606,7 +606,7 @@ class TestWebhookCreateReminder:
 
         async def mock_process(text):
             return llm_response
-        monkeypatch.setattr("app.main.LLMService.process_message", mock_process)
+        monkeypatch.setattr("app.services.dispatcher.LLMService.process_message", mock_process)
         monkeypatch.setattr(
             OnboardingService,
             "prepare_whatsapp_message",
@@ -618,7 +618,7 @@ class TestWebhookCreateReminder:
         calls = []
         def mock_update(phone):
             calls.append(phone)
-        monkeypatch.setattr("app.main._update_ultimo_mensaje", mock_update)
+        monkeypatch.setattr("app.services.dispatcher._update_ultimo_mensaje", mock_update)
 
         payload = make_webhook_payload(messages=[make_text_message("hola bot")])
         response = client.post("/webhook", json=payload)
