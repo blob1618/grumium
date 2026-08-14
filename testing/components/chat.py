@@ -12,8 +12,8 @@ from testing.services.webhook_mode import WebhookModeService
 
 
 def _public_asset(filename: str) -> Path:
-    """Resolve a file inside the repo's public/ directory."""
-    return Path(__file__).resolve().parent.parent.parent / "public" / filename
+    """Resolve a file inside the testing/public/ directory."""
+    return Path(__file__).resolve().parent.parent / "public" / filename
 
 
 def bot_avatar() -> bytes:

@@ -1,0 +1,95 @@
+# Entorno de testing (Streamlit)
+
+Luka es un asistente financiero por WhatsApp. El entorno de testing es una app web (Streamlit) que simula el flujo de WhatsApp de Luka contra el mismo backend del repositorio, sin necesidad de la API de Meta ni de un número real de WhatsApp. Cada mensaje que se escribe en el chat se procesa con el flujo completo del dispatcher de producción (`app/services/dispatcher.py`), tal como lo haría el webhook, y la respuesta se muestra como si llegara por WhatsApp.
+
+El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podman. Streamlit no está en el `requirements.txt` de la raíz, solo en `testing/requirements.txt`, así que `streamlit run` local con pip ya no es una opción soportada.
+
+## Funcionalidades
+
+- Chat que simula WhatsApp: entrada de mensajes, historial de conversación, avatar de Luka y respuesta procesada por el flujo completo del dispatcher (modo webhook). No se envía ningún mensaje real por WhatsApp.
+- Configuración desde la sidebar:
+  - Provider LLM (Gemini o Mistral, según los providers registrados en el factory).
+  - Archivo de prompt (`prompt.md` por defecto y cualquier `.md` adicional en `testing/prompts/`).
+  - Modelo (lista por provider, el primer item es el default).
+  - Usuario simulado: toggle registrado/no registrado, teléfono y nombre.
+- Simulador de usuario: si el toggle "Registrado" está activo, se crea en la base de datos el usuario de test con el teléfono y nombre configurados (via `UserSimulator`). Con el toggle apagado se puede probar el flujo de usuario no registrado.
+- Modos de debug, activables por checkboxes, visibles en un panel desplegable por mensaje:
+  - JSON crudo de la respuesta del LLM.
+  - Latencia de procesamiento en milisegundos.
+  - Estado de Redis (estado multi-turno de la conversación).
+  - Servicio invocado / logs del dispatcher.
+- Reset de base de datos: borra movimientos, categorías y recordatorios del usuario de test (el usuario se conserva).
+- Exportar la conversación como JSON o texto plano.
+- Base de datos SQLite aislada (`testing_luka.db`): no toca la base local (`luka.db`) ni Supabase.
+
+## Requisitos iniciales
+
+1. Docker o Podman instalado y corriendo. Es la única forma soportada de levantar este entorno.
+2. Copiar `.env.example` a `.env` en la raíz del repositorio:
+
+   PowerShell (Windows):
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+   Bash (Linux/macOS):
+
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Completar en `.env` la API key del LLM elegido según `LLM_PROVIDER`:
+   - `LLM_PROVIDER=gemini` (default): setear `GEMINI_API_KEY`.
+   - `LLM_PROVIDER=mistral`: setear `MISTRAL_API_KEY` y cambiar `LLM_PROVIDER=mistral`.
+
+El `docker-compose.yml` usa `env_file: ../.env`, así que sin el `.env` en la raíz el compose falla. `DATABASE_URL` y `REDIS_URL` se sobreescriben en el propio compose, por lo que no hace falta tocarlas.
+
+## Configuración y uso
+
+Todos los comandos se ejecutan desde la raíz del repositorio. Los comandos de Compose son idénticos en Windows (PowerShell) y Linux/macOS (bash); la única diferencia entre plataformas es la copia inicial de `.env` (ver Requisitos iniciales).
+
+### 1. Construir y Levantar
+
+```bash
+# Construir
+docker compose -f testing/docker-compose.yml build
+
+# Levantar
+docker compose -f testing/docker-compose.yml up -d
+```
+
+El primer `build` puede tardar: descarga la imagen `python:3.11-slim` e instala las dependencias del proyecto + Streamlit.
+
+Abrir la app en:
+
+```text
+http://localhost:8501
+```
+
+### 2. Ver Logs
+
+```bash
+# Todo
+docker compose -f testing/docker-compose.yml logs -f
+
+# Solo Streamlit
+docker compose -f testing/docker-compose.yml logs -f streamlit
+```
+
+### 3. Detener
+
+```bash
+docker compose -f testing/docker-compose.yml down
+```
+
+> Para usar con "Podman" simplemente cambia `docker` por `podman` en los comandos anteriores.
+
+## Características
+
+- Base de datos aislada: la app fuerza `DATABASE_URL=sqlite:///./testing_luka.db` (además de la que define el compose). Dentro del contenedor el working directory es `/app` y el volumen `..:/app` monta la raíz del repo, así que el archivo `testing_luka.db` se crea en la raíz del repositorio (no dentro de `testing/`). Es independiente de `luka.db` y de Supabase.
+- Volumen en vivo: el compose monta todo el repositorio en `/app`, por lo que los cambios de código se reflejan sin reconstruir la imagen. El `COPY . /app/` del Dockerfile queda cubierto por el volumen en runtime.
+- Redis: el compose levanta `redis:7-alpine` y lo expone en el host como `localhost:6380` (mapea al puerto interno 6379). El estado multi-turno de la conversación (confirmación de categoría, recordatorios en pasos, etc.) vive ahí y se puede inspeccionar desde el panel de debug.
+- Mismo código de backend: la app importa `app/*` directamente. `WebhookModeService` ejecuta `process_incoming_message` del dispatcher con el teléfono simulado, sin HTTP y sin enviar mensajes a la API de WhatsApp; la confirmación de un registro ocurre recién después de la persistencia en base, igual que en producción.
+- Provider y prompt en caliente: cambiar provider o archivo de prompt en la sidebar resetea el `LLMService` y aplica el nuevo modelo/prompt en el siguiente mensaje.
+- El entorno de testing tiene sus propios tests en `testing/tests/`, que corren con el resto de la suite (`python -m pytest -v`).

@@ -79,6 +79,12 @@ if config.user_registered:
         sim = UserSimulator(SessionLocal)
         sim.create_test_user(config.phone, config.user_name)
         st.session_state.user_simulator_initialized = True
+else:
+    # Desvincular el usuario de test para que el flujo sea el de no registrado.
+    from app.models.database import SessionLocal
+    sim = UserSimulator(SessionLocal)
+    sim.delete_test_user(config.phone)
+    st.session_state.user_simulator_initialized = False
 
 # Render chat
 render_chat(config)
