@@ -111,7 +111,11 @@ def render_chat(config: TestingConfig) -> None:
                     _process_message(prompt, config)
                 )
 
-            st.write(reply_text or "Sin respuesta")
+            raw = debug_data.get("raw_json") or {}
+            if raw.get("error"):
+                st.error(reply_text or "Error del LLM")
+            else:
+                st.write(reply_text or "Sin respuesta")
 
             flags = {
                 "json": config.debug_json,

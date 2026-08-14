@@ -373,3 +373,31 @@ class TestRenderChat:
             render_chat(TestingConfig())
 
         assert chat_st.session_state["messages"][1]["content"] == "Sin respuesta"
+
+    def test_muestra_error_del_llm_con_st_error(self, mock_st):
+        from testing.components.chat import render_chat
+
+        st = mock_st["chat"]
+        st.chat_input.return_value = "Gasté 5000 en supermercado"
+        st.session_state.messages = []
+        st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
+        st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
+        st.spinner.return_value.__enter__ = MagicMock(return_value=None)
+        st.spinner.return_value.__exit__ = MagicMock(return_value=False)
+        st.sidebar.__enter__ = MagicMock(return_value=None)
+        st.sidebar.__exit__ = MagicMock(return_value=False)
+        st.download_button.return_value = None
+
+        with (
+            patch(
+                "testing.components.chat._process_message",
+                new_callable=AsyncMock,
+                return_value=(
+                    "No he podido analizar tu mensaje en este momento.",
+                    {"raw_json": {"intent": "out_of_scope", "error": "RuntimeError: API timeout"}},
+                ),
+            ),
+        ):
+            render_chat(TestingConfig())
+
+        st.error.assert_called_once()
