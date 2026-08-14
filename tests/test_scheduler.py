@@ -163,6 +163,7 @@ class TestCheckReminders:
         """When user window is closed and template is missing, the send is skipped."""
         SessionFactory, engine = _make_session_factory()
         monkeypatch.setattr("app.scheduler.SessionLocal", SessionFactory)
+        monkeypatch.delenv("WHATSAPP_REMINDER_TEMPLATE_NAME", raising=False)
 
         session = SessionFactory()
         now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
