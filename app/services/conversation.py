@@ -5,6 +5,7 @@ Uses Redis to track pending movements and dialog steps per user,
 enabling the category confirmation flow (STK-39).
 """
 
+import asyncio
 import json
 import os
 from dataclasses import dataclass, field, asdict
@@ -147,10 +148,12 @@ class ConversationService:
     """Maneja el estado de conversación multi-turno vía Redis."""
 
     _client: redis.Redis | None = None
+    _loop_id: int | None = None
 
     @classmethod
     async def _get_client(cls) -> redis.Redis:
-        if cls._client is None:
+        loop_id = id(asyncio.get_running_loop())
+        if cls._client is None or cls._loop_id != loop_id:
             redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
             cls._client = redis.from_url(
                 redis_url,
@@ -158,6 +161,7 @@ class ConversationService:
                 socket_connect_timeout=3,
                 socket_timeout=3,
             )
+            cls._loop_id = loop_id
             try:
                 await cls._client.ping()
             except Exception as e:
