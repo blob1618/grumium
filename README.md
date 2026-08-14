@@ -143,7 +143,7 @@ El repositorio contiene migraciones SQL versionadas en `database/migrations/`, a
 
 ## Limitaciones conocidas y trabajo relacionado
 
-- La deduplicación por `whatsapp_message_id` evita insertar dos filas, pero un reintento de Meta puede generar una segunda respuesta visible indicando que el movimiento estaba duplicado.
+- La deduplicación por `whatsapp_message_id` evita insertar dos filas. Cuando Meta reenvía un mensaje ya persistido, el reintento se procesa en silencio: la respuesta visible se suprime porque la confirmación ya se envió en la primera entrega.
 - Los índices productivos de usuarios y movimientos, incluido el índice único parcial de `whatsapp_message_id`, deben verificarse en Supabase. El contrato versionado puede contenerlos sin que eso pruebe su aplicación remota.
 - El flujo completo puede tardar aproximadamente entre 5 y 10 segundos por la suma de LLM, base de datos, API de WhatsApp y hosting.
 - Faltan métricas de latencia por etapa e investigación sobre typing indicator o mark as read en WhatsApp Business API.

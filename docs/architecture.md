@@ -85,13 +85,13 @@ Las categorías default y personalizadas quedan pendientes de trabajo específic
 | Estado | Efecto |
 | --- | --- |
 | `registered` | La escritura terminó correctamente y el backend confirma el ingreso o egreso. |
-| `duplicate` | No se inserta una segunda fila; actualmente se envía una respuesta indicando que ya estaba registrado. |
+| `duplicate` | No se inserta una segunda fila; es un reintento/reenvío de Meta de un mensaje ya procesado y se suprime la respuesta visible (la confirmación ya se envió en la primera entrega). |
 | `user_not_found` | No existe un usuario vinculado y no se persiste el movimiento. |
 | `invalid_data` | Faltan datos válidos y el backend solicita reformular o completar el mensaje. |
 | `persistence_error` | La escritura falló y no se confirma el registro. |
 | `not_a_movement` | No se identificó un movimiento financiero registrable. |
 
-La deduplicación consulta `whatsapp_message_id` antes de insertar y el ORM/migración declaran un índice único parcial. Aun así, la aplicación real de ese índice debe verificarse en Supabase. Cuando Meta reenvía un mensaje, no se duplica la fila, pero el webhook puede producir una segunda respuesta visible; evitar esa respuesta es un bug pendiente.
+La deduplicación consulta `whatsapp_message_id` antes de insertar y el ORM/migración declaran un índice único parcial. Aun así, la aplicación real de ese índice debe verificarse en Supabase. Cuando Meta reenvía un mensaje ya persistido, no se duplica la fila y el reintento se procesa en silencio: la respuesta visible se suprime porque la confirmación ya se envió en la primera entrega.
 
 ## Dashboard, Magic Link y consultas
 
@@ -109,7 +109,6 @@ STK-128, correspondiente a la consulta de movimientos, también queda fuera de S
 ## Limitaciones y backlog técnico
 
 - Verificar en Supabase los índices productivos de `public.usuario`, categorías y movimientos, incluido el índice único parcial de `whatsapp_message_id`.
-- Evitar la segunda respuesta visible cuando Meta reenvía un mensaje ya procesado.
 - Medir la latencia por etapa; durante pruebas manuales se observó una latencia aproximada de 5–10 segundos entre LLM, base de datos, API de WhatsApp y Render, pendiente de medición formal por etapa.
 - Investigar typing indicator y mark as read en WhatsApp Business API.
 - Implementar observabilidad del recorrido webhook -> LLM -> DB -> respuesta.

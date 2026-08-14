@@ -273,8 +273,7 @@ def test_webhook_integration_duplicate_message_id_does_not_create_second_row(db_
     assert second_response.status_code == 200
     assert len(saved_movements) == 1
     assert "egreso: supermercado" in first_send_message.await_args.args[1]
-    assert "ya hab" in second_send_message.await_args.args[1]
-    assert "no lo dupli" in second_send_message.await_args.args[1]
+    second_send_message.assert_not_awaited()
 
 
 def test_create_reminder_not_processed_twice(db_context):

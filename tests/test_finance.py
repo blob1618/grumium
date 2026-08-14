@@ -287,6 +287,30 @@ def test_register_movement_duplicate_whatsapp_message_id_does_not_save_twice(db_
     assert count_movements(session) == 1
 
 
+def test_same_description_different_message_ids_register_as_distinct(db_context):
+    session = db_context["session"]
+    create_user(session)
+
+    first = FinanceService.register_movement_from_whatsapp_text(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.dia1",
+        original_text="Gaste 1500 en almuerzo",
+        llm_result=movement_payload(),
+    )
+    second = FinanceService.register_movement_from_whatsapp_text(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.dia2",
+        original_text="Gaste 1500 en almuerzo",
+        llm_result=movement_payload(),
+    )
+
+    assert first.status == "registered"
+    assert second.status == "registered"
+    assert second.duplicate is False
+    assert first.movement_id != second.movement_id
+    assert count_movements(session) == 2
+
+
 def test_register_movement_commit_error_returns_persistence_error(db_context, monkeypatch):
     session = db_context["session"]
     create_user(session)

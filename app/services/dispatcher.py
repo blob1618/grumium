@@ -121,6 +121,20 @@ def _registration_reply(
     return extracted_data.get("reply_text") or "No pude interpretar ese mensaje como un movimiento financiero."
 
 
+def _registration_dispatch_reply(
+    result: MovementRegistrationResult,
+    extracted_data: dict,
+) -> str:
+    """
+    Responde al registro. Un duplicado (mismo whatsapp_message_id ya persistido)
+    es un reintento/reenvío de Meta de un mensaje ya procesado: la confirmación ya
+    se envió en la primera entrega, así que se suprime la respuesta visible.
+    """
+    if result.status == "duplicate":
+        return ""
+    return _registration_reply(result, extracted_data)
+
+
 def _safe_non_stk35_reply(extracted_data: dict) -> str:
     intent = extracted_data.get("intent")
     reply_text = extracted_data.get("reply_text") or ""
@@ -511,7 +525,7 @@ async def _register_and_reply_with_hint(
         reply += f"\n{_category_hint_reply()}"
         return reply
 
-    return _registration_reply(result, extracted_data)
+    return _registration_dispatch_reply(result, extracted_data)
 
 
 # ---------------------------------------------------------------------------
@@ -847,7 +861,7 @@ async def process_incoming_message(
                     f"message_id={whatsapp_message_id}",
                     f"status={registration_result.status}",
                 )
-                reply_text = _registration_reply(registration_result, extracted_data)
+                reply_text = _registration_dispatch_reply(registration_result, extracted_data)
                 service_invoked = "finance"
         elif intent in ("confirm_category", "reject_category"):
             # Estos intents no deberían llegar acá sin pending, pero por si acaso
