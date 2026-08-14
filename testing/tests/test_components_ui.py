@@ -94,6 +94,51 @@ class TestRenderSidebar:
 
         assert st.session_state["reset_db_requested"] is True
 
+    def test_render_sidebar_configura_el_modelo(self, mock_st):
+        from testing.components.sidebar import render_sidebar
+
+        st = mock_st["sidebar"]
+        st.sidebar.__enter__ = MagicMock(return_value=None)
+        st.sidebar.__exit__ = MagicMock(return_value=False)
+        col = MagicMock()
+        col.__enter__ = MagicMock(return_value=None)
+        col.__exit__ = MagicMock(return_value=False)
+        st.columns.return_value = (col, col)
+
+        # orden de llamadas: Provider, Prompt, Modelo
+        st.selectbox.side_effect = ["gemini", "prompt.md", "gemini-3.5-flash"]
+        st.text_input.return_value = "5491112345678"
+        st.checkbox.return_value = True
+        st.button.return_value = False
+
+        config = render_sidebar()
+
+        assert config.model == "gemini-3.5-flash"
+
+    def test_modelo_fuera_de_lista_resetea_a_primero(self, mock_st):
+        from testing.components.sidebar import render_sidebar
+        from testing.config.settings import TestingConfig
+
+        st = mock_st["sidebar"]
+        st.session_state["config"] = TestingConfig(provider="gemini", model="mistral-small-latest")
+        st.sidebar.__enter__ = MagicMock(return_value=None)
+        st.sidebar.__exit__ = MagicMock(return_value=False)
+        col = MagicMock()
+        col.__enter__ = MagicMock(return_value=None)
+        col.__exit__ = MagicMock(return_value=False)
+        st.columns.return_value = (col, col)
+
+        st.selectbox.return_value = "gemini-3.6-flash"
+        st.text_input.return_value = "5491112345678"
+        st.checkbox.return_value = True
+        st.button.return_value = False
+
+        render_sidebar()
+
+        # el selectbox de modelo debe arrancar en índice 0 (primer item de gemini)
+        model_call = st.selectbox.call_args_list[2]
+        assert model_call.kwargs["index"] == 0
+
 
 class TestSinModoDirecto:
     def test_config_no_tiene_campo_modo(self):

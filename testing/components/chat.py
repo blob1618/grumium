@@ -59,6 +59,7 @@ async def _process_message(text: str, config: TestingConfig) -> tuple[str, dict]
         phone=config.phone,
         provider=config.provider,
         prompt_path=_get_prompt_path(config),
+        model=config.model,
     )
     debug_data = {
         "raw_json": result.raw_llm_response,
@@ -66,6 +67,7 @@ async def _process_message(text: str, config: TestingConfig) -> tuple[str, dict]
         "service_log": result.service_invoked or "unknown",
         "redis_state": result.redis_state,
         "provider": result.provider,
+        "model": result.model,
         "prompt_used": result.prompt_path,
     }
     return result.reply_text, debug_data

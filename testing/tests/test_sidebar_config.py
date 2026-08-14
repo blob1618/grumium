@@ -1,9 +1,11 @@
 """Tests for sidebar configuration logic (non-UI parts)."""
 
+import os
 from unittest.mock import patch
 
 
-from testing.components.sidebar import get_available_prompts, get_available_providers
+from testing.components.sidebar import get_available_models, get_available_prompts, get_available_providers
+from testing.config.settings import set_model_env
 
 
 class TestGetAvailableProviders:
@@ -43,3 +45,36 @@ class TestGetAvailablePrompts:
     def test_handles_missing_prompts_dir(self, tmp_path):
         prompts = get_available_prompts(str(tmp_path / "nonexistent"))
         assert prompts == ["prompt.md"]
+
+
+class TestGetAvailableModels:
+    def test_gemini_flash_primero(self):
+        models = get_available_models("gemini")
+        assert models[0] == "gemini-3.6-flash"
+        assert "gemini-3.1-flash-lite" in models
+        assert "gemini-3.1-pro-preview" in models
+
+    def test_mistral_small_primero(self):
+        models = get_available_models("mistral")
+        assert models[0] == "mistral-small-latest"
+        assert "ministral-3b-latest" in models
+
+    def test_provider_desconocido_devuelve_lista_gemini(self):
+        assert get_available_models("desconocido") == get_available_models("gemini")
+
+
+class TestSetModelEnv:
+    def test_setea_gemini_model(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_MODEL", raising=False)
+        set_model_env("gemini", "gemini-3.5-flash")
+        assert os.environ["GEMINI_MODEL"] == "gemini-3.5-flash"
+
+    def test_setea_mistral_model(self, monkeypatch):
+        monkeypatch.delenv("MISTRAL_MODEL", raising=False)
+        set_model_env("mistral", "mistral-small-latest")
+        assert os.environ["MISTRAL_MODEL"] == "mistral-small-latest"
+
+    def test_modelo_vacio_no_toca_env(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+        set_model_env("gemini", "")
+        assert os.environ["GEMINI_MODEL"] == "gemini-3.1-flash-lite"

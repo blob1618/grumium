@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from app.services.dispatcher import process_incoming_message
 from app.services.llm import LLMService
 from app.services.conversation import ConversationService
+from testing.config.settings import set_model_env
 
 
 @dataclass
@@ -20,6 +21,7 @@ class WebhookModeResult:
     provider: str
     prompt_path: str
     redis_state: dict | None
+    model: str = ""
 
 
 class WebhookModeService:
@@ -31,6 +33,7 @@ class WebhookModeService:
         phone: str,
         provider: str,
         prompt_path: str,
+        model: str = "",
     ) -> WebhookModeResult:
         """
         Send a message through the full dispatcher pipeline.
@@ -39,6 +42,7 @@ class WebhookModeService:
         captures Redis state, and measures latency.
         """
         os.environ["LLM_PROVIDER"] = provider
+        set_model_env(provider, model)
         LLMService.reset_provider()
         LLMService.set_prompt_path(prompt_path)
 
@@ -68,6 +72,7 @@ class WebhookModeService:
                 provider=provider,
                 prompt_path=prompt_path,
                 redis_state=redis_state,
+                model=model,
             )
         except Exception as exc:
             latency_ms = (time.perf_counter() - start) * 1000
@@ -80,4 +85,5 @@ class WebhookModeService:
                 provider=provider,
                 prompt_path=prompt_path,
                 redis_state=None,
+                model=model,
             )

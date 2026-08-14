@@ -1,5 +1,6 @@
 """Tests for WebhookModeService."""
 
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -146,3 +147,24 @@ class TestSendMessage:
             result = await service.send_message("test", "12345", "gemini", "prompt.md")
 
         assert result.redis_state == {"error": "Could not read Redis state"}
+
+    @pytest.mark.asyncio
+    async def test_sets_model_via_env(self):
+        service = WebhookModeService()
+
+        with (
+            patch(
+                "testing.services.webhook_mode.process_incoming_message",
+                new_callable=AsyncMock,
+                return_value=dispatch_result(),
+            ),
+            patch("testing.services.webhook_mode.LLMService.reset_provider"),
+            patch("testing.services.webhook_mode.LLMService.set_prompt_path"),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            result = await service.send_message(
+                "test", "12345", "gemini", "prompt.md", model="gemini-3.5-flash"
+            )
+
+        assert os.environ["GEMINI_MODEL"] == "gemini-3.5-flash"
+        assert result.model == "gemini-3.5-flash"

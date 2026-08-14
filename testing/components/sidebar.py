@@ -5,7 +5,7 @@ from pathlib import Path
 import streamlit as st
 
 from app.services.llm_providers.factory import _PROVIDERS
-from testing.config.settings import TestingConfig
+from testing.config.settings import TestingConfig, get_available_models
 
 
 def _public_asset(filename: str) -> Path:
@@ -69,6 +69,16 @@ def render_sidebar() -> TestingConfig:
             key="prompt_select",
         )
         config.prompt_path = prompt
+
+        st.subheader("Modelo")
+        models = get_available_models(config.provider)
+        model_index = models.index(config.model) if config.model in models else 0
+        config.model = st.selectbox(
+            "Modelo",
+            options=models,
+            index=model_index,
+            key="model_select",
+        )
 
         st.subheader("Usuario simulado")
         config.user_registered = st.checkbox(
