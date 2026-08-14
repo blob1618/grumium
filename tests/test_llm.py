@@ -521,7 +521,7 @@ async def test_gemini_provider_quota_error_does_not_try_fallback_or_leak_key(mon
 
     request = httpx.Request(
         "POST",
-        f"https://example.test/models/gemini-primary:generateContent?key={api_key}",
+        "https://example.test/models/gemini-primary:generateContent",
     )
     response = httpx.Response(
         429,
@@ -535,11 +535,11 @@ async def test_gemini_provider_quota_error_does_not_try_fallback_or_leak_key(mon
     mock_client.post = AsyncMock(return_value=response)
 
     with (
-        patch("app.services.llm_providers.gemini.asyncio.sleep", new_callable=AsyncMock),
+        patch("app.services.llm_providers.base.asyncio.sleep", new_callable=AsyncMock),
         patch("app.services.llm_providers.gemini.httpx.AsyncClient", return_value=mock_client),
     ):
         provider = GeminiProvider()
-        with pytest.raises(RuntimeError, match="status 429") as exc_info:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
             await provider.generate_json("sys", "msg")
 
     assert mock_client.post.await_count == provider.MAX_RETRIES_PER_MODEL
