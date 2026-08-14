@@ -28,10 +28,9 @@ Entorno de testing interactivo basado en Streamlit para probar el asistente fina
 | `requirements.txt` | `-r ../requirements.txt` + `streamlit` |
 | `streamlit_app.py` | Entry point; inicializa SQLite aislada, estado, sidebar, chat, user simulator, tema obsidiana |
 | `config/settings.py` | Dataclasses `TestingConfig` y `ChatMessage` |
-| `services/direct_mode.py` | `DirectModeService` — llama a `LLMService` directo (sin dispatcher) |
 | `services/webhook_mode.py` | `WebhookModeService` — simula el flujo completo vía dispatcher |
 | `services/user_simulator.py` | `UserSimulator` — CRUD de usuarios de test + seed de categorías |
-| `components/sidebar.py` | Panel lateral: modo, provider, prompt, usuario, debug, logo-texto |
+| `components/sidebar.py` | Panel lateral: provider, prompt, usuario, debug, logo-texto |
 | `components/chat.py` | Render de chat, input, export JSON/texto, avatar del bot con logo |
 | `components/debug_panel.py` | Expander colapsable con JSON crudo, latencia, Redis, service |
 | `.streamlit/config.toml` | Tema obsidiana (dark) |
@@ -53,7 +52,7 @@ Excluye `.venv/`, `.git/`, caches y artefactos del contexto de build. Acelera dr
   - `tests/test_dispatcher.py` — intents, onboarding, `/link`, multi-turno, legacy branch, edge cases (~60 tests).
   - `tests/test_dispatcher_helpers.py` — tests unitarios de las reply/format helpers (~75 tests).
 - **Paquete `testing/`: 100% de cobertura** (services, components, config).
-  - 8 archivos de test + `conftest.py` (SQLite in-memory).
+  - 7 archivos de test + `conftest.py` (SQLite in-memory).
   - `test_components_ui.py` mockea el módulo `streamlit` para cubrir el render.
 - **Suite completa del repo: 445 passed.**
 
@@ -64,8 +63,6 @@ Las capturas de validación quedan en `artifacts/`, incluyendo:
 - `streamlit-import-error-before-fix.png` — error original de shadowing de `app`.
 - `scenario-webhook-no-table-before-fix.png` — error original de SQLite sin tablas.
 - `streamlit-after-fix-loading.png` — carga inicial correcta.
-- `scenario-direct-mode-mistral-success.png` — respuesta LLM directa correcta.
-- `scenario-direct-mode-llm-error.png` — error de provider manejado sin crash.
 - `scenario-webhook-unregistered-invitation-success.png` — invitación de usuario no registrado.
 - `scenario-webhook-registered-expense-success.png` — persistencia de movimiento.
 - `scenario-reset-db-data-cleared-success.png` — reset verificado contra SQLite.
@@ -124,10 +121,10 @@ streamlit run testing/streamlit_app.py --server.port=8501
 
 ### Cómo usar la app
 
-1. **Modo** (sidebar): `Directo (LLM)` llama a `LLMService` directo; `Webhook (completo)` recorre el dispatcher completo (onboarding, persistencia, multi-turno).
+1. **Chat**: cada mensaje recorre el flujo completo del dispatcher (onboarding, persistencia, multi-turno) vía `WebhookModeService`, igual que un webhook real de WhatsApp.
 2. **Modelo LLM**: dropdown con los providers de `factory.py` (`gemini`, `mistral`).
 3. **Prompt**: selector de `prompt.md` o de archivos `.md` en `testing/prompts/` (para A/B testing).
-4. **Usuario simulado**: toggle registrado/no, teléfono y nombre. En modo webhook con usuario registrado se crea el usuario en la BD automáticamente.
+4. **Usuario simulado**: toggle registrado/no, teléfono y nombre. Con usuario registrado se crea el usuario en la BD automáticamente.
 5. **Debug**: expander `🔍 Debug` bajo cada respuesta con JSON crudo del LLM, latencia, estado Redis y service invocado. Toggles en el sidebar.
 6. **Exportar**: botones JSON (con debug) y Texto (solo conversación) tras el primer mensaje.
 7. **Acciones**: limpiar chat y resetear la BD de test.

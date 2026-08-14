@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 @dataclass
 class TestingConfig:
     """Holds all sidebar configuration state."""
-    mode: str = "direct"                      # "direct" | "webhook"
     provider: str = "gemini"                  # LLM provider name
     prompt_path: str = "prompt.md"            # path to prompt file
     user_registered: bool = True              # simulate registered user

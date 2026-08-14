@@ -73,7 +73,7 @@ if st.session_state.get("reset_db_requested"):
     st.toast("Base de datos reseteada")
 
 # Handle user simulation setup
-if config.mode == "webhook" and config.user_registered:
+if config.user_registered:
     if not st.session_state.user_simulator_initialized:
         from app.models.database import SessionLocal
         sim = UserSimulator(SessionLocal)

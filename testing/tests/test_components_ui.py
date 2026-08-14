@@ -38,7 +38,6 @@ class TestRenderSidebar:
         col.__exit__ = MagicMock(return_value=False)
         st.columns.return_value = (col, col)
 
-        st.radio.return_value = "webhook"
         st.selectbox.return_value = "gemini"
         st.text_input.return_value = "5491112345678"
         st.checkbox.return_value = True
@@ -46,7 +45,6 @@ class TestRenderSidebar:
 
         config = render_sidebar()
 
-        assert config.mode == "webhook"
         assert config.provider == "gemini"
         assert st.session_state["config"] is config
 
@@ -62,7 +60,6 @@ class TestRenderSidebar:
         col.__exit__ = MagicMock(return_value=False)
         st.columns.return_value = (col, col)
 
-        st.radio.return_value = "direct"
         st.selectbox.return_value = "gemini"
         st.text_input.return_value = "5491112345678"
         st.checkbox.return_value = True
@@ -87,7 +84,6 @@ class TestRenderSidebar:
         col.__exit__ = MagicMock(return_value=False)
         st.columns.return_value = (col, col)
 
-        st.radio.return_value = "direct"
         st.selectbox.return_value = "gemini"
         st.text_input.return_value = "5491112345678"
         st.checkbox.return_value = True
@@ -97,6 +93,33 @@ class TestRenderSidebar:
         render_sidebar()
 
         assert st.session_state["reset_db_requested"] is True
+
+
+class TestSinModoDirecto:
+    def test_config_no_tiene_campo_modo(self):
+        from testing.config.settings import TestingConfig
+
+        assert not hasattr(TestingConfig(), "mode")
+
+    def test_sidebar_no_renderiza_radio_de_modo(self, mock_st):
+        from testing.components.sidebar import render_sidebar
+
+        st = mock_st["sidebar"]
+        st.sidebar.__enter__ = MagicMock(return_value=None)
+        st.sidebar.__exit__ = MagicMock(return_value=False)
+        col = MagicMock()
+        col.__enter__ = MagicMock(return_value=None)
+        col.__exit__ = MagicMock(return_value=False)
+        st.columns.return_value = (col, col)
+
+        st.selectbox.return_value = "gemini"
+        st.text_input.return_value = "5491112345678"
+        st.checkbox.return_value = True
+        st.button.return_value = False
+
+        render_sidebar()
+
+        st.radio.assert_not_called()
 
 
 class TestRenderDebug:
@@ -147,36 +170,10 @@ class TestChatLogic:
         assert _get_prompt_path(config) == "testing/prompts/prompt_v2.md"
 
     @pytest.mark.asyncio
-    async def test_process_message_direct_mode(self, mock_st):
-        from testing.components.chat import _process_message
-
-        config = TestingConfig(mode="direct")
-
-        with (
-            patch(
-                "testing.components.chat.DirectModeService.send_message",
-                new_callable=AsyncMock,
-            ) as mock_send,
-        ):
-            mock_send.return_value = MagicMock(
-                reply_text="hola",
-                raw_json={"intent": "greeting"},
-                latency_ms=5.0,
-                provider="gemini",
-                prompt_path="prompt.md",
-            )
-            reply, debug = await _process_message("hola", config)
-
-        assert reply == "hola"
-        assert debug["raw_json"]["intent"] == "greeting"
-        assert debug["latency_ms"] == 5.0
-        assert debug["service_log"] == "DirectModeService (LLM only)"
-
-    @pytest.mark.asyncio
     async def test_process_message_webhook_mode(self, mock_st):
         from testing.components.chat import _process_message
 
-        config = TestingConfig(mode="webhook")
+        config = TestingConfig()
 
         with (
             patch(
@@ -204,7 +201,7 @@ class TestChatLogic:
     async def test_process_message_webhook_unknown_service(self, mock_st):
         from testing.components.chat import _process_message
 
-        config = TestingConfig(mode="webhook")
+        config = TestingConfig()
 
         with (
             patch(

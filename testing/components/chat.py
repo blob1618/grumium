@@ -8,7 +8,6 @@ import streamlit as st
 
 from testing.components.debug_panel import render_debug
 from testing.config.settings import TestingConfig
-from testing.services.direct_mode import DirectModeService
 from testing.services.webhook_mode import WebhookModeService
 
 
@@ -50,43 +49,26 @@ def _get_prompt_path(config: TestingConfig) -> str:
 
 async def _process_message(text: str, config: TestingConfig) -> tuple[str, dict]:
     """
-    Route message to the appropriate service based on mode.
+    Procesa el mensaje a través del flujo completo del dispatcher (webhook).
 
     Returns (reply_text, debug_data).
     """
-    if config.mode == "direct":
-        service = DirectModeService()
-        result = await service.send_message(
-            text=text,
-            provider=config.provider,
-            prompt_path=_get_prompt_path(config),
-        )
-        debug_data = {
-            "raw_json": result.raw_json,
-            "latency_ms": result.latency_ms,
-            "service_log": "DirectModeService (LLM only)",
-            "redis_state": None,
-            "provider": result.provider,
-            "prompt_used": result.prompt_path,
-        }
-        return result.reply_text, debug_data
-    else:
-        service = WebhookModeService()
-        result = await service.send_message(
-            text=text,
-            phone=config.phone,
-            provider=config.provider,
-            prompt_path=_get_prompt_path(config),
-        )
-        debug_data = {
-            "raw_json": result.raw_llm_response,
-            "latency_ms": result.latency_ms,
-            "service_log": result.service_invoked or "unknown",
-            "redis_state": result.redis_state,
-            "provider": result.provider,
-            "prompt_used": result.prompt_path,
-        }
-        return result.reply_text, debug_data
+    service = WebhookModeService()
+    result = await service.send_message(
+        text=text,
+        phone=config.phone,
+        provider=config.provider,
+        prompt_path=_get_prompt_path(config),
+    )
+    debug_data = {
+        "raw_json": result.raw_llm_response,
+        "latency_ms": result.latency_ms,
+        "service_log": result.service_invoked or "unknown",
+        "redis_state": result.redis_state,
+        "provider": result.provider,
+        "prompt_used": result.prompt_path,
+    }
+    return result.reply_text, debug_data
 
 
 def render_chat(config: TestingConfig) -> None:

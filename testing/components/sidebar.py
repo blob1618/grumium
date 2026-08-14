@@ -48,16 +48,6 @@ def render_sidebar() -> TestingConfig:
             st.image(str(logo), use_container_width=True)
         st.caption("Entorno de testing")
 
-        st.subheader("Modo")
-        mode = st.radio(
-            "Modo de operación",
-            options=["direct", "webhook"],
-            format_func=lambda x: "Directo (LLM)" if x == "direct" else "Webhook (completo)",
-            index=0 if config.mode == "direct" else 1,
-            key="mode_radio",
-        )
-        config.mode = mode
-
         st.subheader("Modelo LLM")
         providers = get_available_providers()
         provider_index = providers.index(config.provider) if config.provider in providers else 0
