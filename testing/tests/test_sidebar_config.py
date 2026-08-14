@@ -51,6 +51,7 @@ class TestGetAvailableModels:
     def test_gemini_flash_primero(self):
         models = get_available_models("gemini")
         assert models[0] == "gemini-3.6-flash"
+        assert "gemini-3.7-flash" in models
         assert "gemini-3.1-flash-lite" in models
         assert "gemini-3.1-pro-preview" in models
 
