@@ -51,10 +51,10 @@ Excluye `.venv/`, `.git/`, caches y artefactos del contexto de build. Acelera dr
 - **Dispatcher: 100% de cobertura** (`app/services/dispatcher.py`, 425 statements).
   - `tests/test_dispatcher.py` — intents, onboarding, `/link`, multi-turno, legacy branch, edge cases (~60 tests).
   - `tests/test_dispatcher_helpers.py` — tests unitarios de las reply/format helpers (~75 tests).
-- **Paquete `testing/`: 100% de cobertura** (services, components, config).
-  - 7 archivos de test + `conftest.py` (SQLite in-memory).
+- **Paquete `testing/`: 100% de cobertura** (services, components, config, entrypoint).
+  - 8 archivos de test + `conftest.py` (SQLite in-memory).
   - `test_components_ui.py` mockea el módulo `streamlit` para cubrir el render.
-- **Suite completa del repo: 445 passed.**
+- **Suite completa del repo: 513 passed.**
 
 ### 6. Artefactos Playwright
 
@@ -153,5 +153,5 @@ Resultados esperados:
 |---|---|
 | Dispatcher (`app/services/dispatcher.py`) | 100% |
 | Paquete `testing/` | 100% |
-| Suite completa | 444 passed |
+| Suite completa | 513 passed |
 | Ruff | 0 errores |

@@ -390,6 +390,92 @@ async def test_process_message_invalid_intent_normalized():
         assert result["intent"] == "out_of_scope"
 
 
+@pytest.mark.asyncio
+async def test_process_message_invalid_amount_becomes_none():
+    mock_response = {
+        "intent": "expense",
+        "amount": "no-es-un-numero",
+        "expense": "nafta",
+        "reply_text": "test",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["amount"] is None
+
+
+@pytest.mark.asyncio
+async def test_process_message_invalid_reminder_amount_becomes_none():
+    mock_response = {
+        "intent": "create_reminder",
+        "reminder_concept": "luz",
+        "reminder_amount": "mil",
+        "reply_text": "test",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["reminder_amount"] is None
+
+
+@pytest.mark.asyncio
+async def test_process_message_normalizes_reminder_id():
+    mock_response = {
+        "intent": "update_reminder",
+        "reminder_id": " 42 ",
+        "reply_text": "test",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["reminder_id"] == "42"
+
+
+@pytest.mark.asyncio
+async def test_process_audio_expense_returns_placeholder():
+    result = await LLMService.process_audio_expense(b"audio-bytes")
+
+    assert result["amount"] is None
+    assert result["reply_text"] == "Aun no proceso notas de voz."
+
+
+@pytest.mark.asyncio
+async def test_process_image_receipt_returns_placeholder():
+    result = await LLMService.process_image_receipt(b"image-bytes")
+
+    assert result["amount"] is None
+    assert result["reply_text"] == "Aun no proceso imagenes de comprobantes."
+
+
+def test_get_provider_creates_and_caches_singleton():
+    LLMService._provider = None
+    try:
+        with patch("app.services.llm.create_provider") as mock_create:
+            mock_provider = MagicMock()
+            mock_create.return_value = mock_provider
+
+            provider = LLMService._get_provider()
+
+            assert provider is mock_provider
+            assert LLMService._provider is mock_provider
+            assert mock_create.call_count == 1
+
+            # La segunda llamada usa el singleton cacheado
+            assert LLMService._get_provider() is mock_provider
+            assert mock_create.call_count == 1
+    finally:
+        LLMService._provider = None
+
+
+def test_reset_provider_clears_cached_instance():
+    LLMService._provider = MagicMock()
+    try:
+        LLMService.reset_provider()
+        assert LLMService._provider is None
+    finally:
+        LLMService._provider = None
+
+
 # =============================================================================
 # Tests de carga de prompt.md
 # =============================================================================

@@ -3,7 +3,17 @@
 import pytest
 
 from testing.services.user_simulator import UserSimulator
-from app.models.database import Categoria
+from app.models.database import Categoria, Usuario
+
+
+class TestTestUserFixture:
+    def test_fixture_creates_persisted_user(self, test_user):
+        user = test_user["user"]
+        session = test_user["session"]
+
+        assert user.whatsapp_id == "5491112345678"
+        assert user.id is not None
+        assert session.get(Usuario, user.id) is user
 
 
 class TestCreateUser:

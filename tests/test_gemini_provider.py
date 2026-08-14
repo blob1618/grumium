@@ -2,7 +2,7 @@
 
 import json
 from contextlib import asynccontextmanager
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -93,3 +93,87 @@ def test_safe_json_loads_extrae_json_embebido():
 def test_safe_json_loads_parsea_json_plano():
     provider = GeminiProvider()
     assert provider._safe_json_loads('{"a": 1}') == {"a": 1}
+
+
+@pytest.mark.asyncio
+async def test_429_con_retry_after_invalido_usa_backoff():
+    async with _run_generate(
+        [FakeResponse(429, headers={"Retry-After": "no-es-numero"}), FakeResponse(200, text=VALID_JSON)]
+    ) as (provider, client):
+        result = await provider.generate_json("sys", "user")
+    assert result["intent"] == "expense"
+    assert len(client.requested_urls) == 2
+
+
+@pytest.mark.asyncio
+async def test_error_de_red_connect_error_se_propaga():
+    async with _run_generate([httpx.ConnectError("network down")]) as (provider, client):
+        with pytest.raises(httpx.ConnectError):
+            await provider.generate_json("sys", "user")
+    assert len(client.requested_urls) == 1
+
+
+class _NoCandidatesProvider(GeminiProvider):
+    """Provider que no ofrece ningún modelo candidato."""
+
+    def _get_model_candidates(self, primary_model):
+        return []
+
+
+@pytest.mark.asyncio
+async def test_sin_candidatos_de_modelo_lanza_runtime_error():
+    provider = _NoCandidatesProvider()
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False):
+        with pytest.raises(RuntimeError, match="todos los modelos fallaron sin error registrado"):
+            await provider.generate_json("sys", "user")
+
+
+def test_normalize_model_name_strips_models_prefix():
+    provider = GeminiProvider()
+    assert provider._normalize_model_name("models/gemini-3.6-flash") == "gemini-3.6-flash"
+    assert provider._normalize_model_name('"gemini-3.6-flash"') == "gemini-3.6-flash"
+    assert provider._normalize_model_name("  models/gemini-3.5-flash  ") == "gemini-3.5-flash"
+
+
+@pytest.mark.asyncio
+async def test_gemini_sin_candidates_levanta_value_error():
+    payload = {"candidates": []}
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.json.return_value = payload
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with (
+        patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False),
+        patch("app.services.llm_providers.gemini.httpx.AsyncClient", return_value=mock_client),
+    ):
+        provider = GeminiProvider()
+        with pytest.raises(ValueError, match="no candidates"):
+            await provider.generate_json("sys", "user")
+
+
+@pytest.mark.asyncio
+async def test_gemini_candidates_con_parts_vacias_levanta_value_error():
+    payload = {"candidates": [{"content": {"parts": []}}]}
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.json.return_value = payload
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with (
+        patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False),
+        patch("app.services.llm_providers.gemini.httpx.AsyncClient", return_value=mock_client),
+    ):
+        provider = GeminiProvider()
+        with pytest.raises(ValueError, match="empty content payload"):
+            await provider.generate_json("sys", "user")

@@ -165,6 +165,5 @@ class TestSendMessage:
             result = await service.send_message(
                 "test", "12345", "gemini", "prompt.md", model="gemini-3.5-flash"
             )
-
-        assert os.environ["GEMINI_MODEL"] == "gemini-3.5-flash"
-        assert result.model == "gemini-3.5-flash"
+            assert os.environ["GEMINI_MODEL"] == "gemini-3.5-flash"
+            assert result.model == "gemini-3.5-flash"

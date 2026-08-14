@@ -2,7 +2,7 @@
 
 import json
 from contextlib import asynccontextmanager
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -81,4 +81,26 @@ async def test_sin_api_key_lanza_runtime_error():
     provider = MistralProvider()
     with patch.dict("os.environ", {}, clear=True):
         with pytest.raises(RuntimeError, match="MISTRAL_API_KEY"):
+            await provider.generate_json("sys", "user")
+
+
+@pytest.mark.asyncio
+async def test_mistral_sin_choices_levanta_value_error():
+    payload = {"choices": []}
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.json.return_value = payload
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with (
+        patch.dict("os.environ", {"MISTRAL_API_KEY": "test-key"}, clear=False),
+        patch("app.services.llm_providers.mistral.httpx.AsyncClient", return_value=mock_client),
+    ):
+        provider = MistralProvider()
+        with pytest.raises(ValueError, match="no choices"):
             await provider.generate_json("sys", "user")
