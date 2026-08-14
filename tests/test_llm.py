@@ -339,6 +339,30 @@ async def test_process_message_fallback_on_exception():
 
         assert result["intent"] == "out_of_scope"
         assert "No he podido analizar" in result["reply_text"]
+        assert result["error"] == "RuntimeError: API timeout"
+
+
+@pytest.mark.asyncio
+async def test_reply_text_none_se_normaliza_a_vacio():
+    """Prueba: reply_text=null del LLM se normaliza a string vacío (nunca "None")."""
+    mock_response = {
+        "intent": "expense",
+        "movement_type": "egreso",
+        "amount": 5000,
+        "currency": "ARS",
+        "category": "supermercado",
+        "description": "supermercado",
+        "reply_text": None,
+    }
+
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = mock_response
+        mock_get_provider.return_value = mock_provider
+
+        result = await LLMService.process_message("Gasté 5000 en supermercado")
+
+        assert result["reply_text"] == ""
 
 
 @pytest.mark.asyncio

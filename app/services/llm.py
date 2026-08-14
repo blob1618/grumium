@@ -180,7 +180,7 @@ class LLMService:
                 "reminder_amount": reminder_amount,
                 "reminder_currency": reminder_currency,
                 "reminder_id": reminder_id,
-                "reply_text": str(parsed.get("reply_text", "")),
+                "reply_text": str(parsed.get("reply_text") or ""),
             }
 
         except Exception as exc:
@@ -204,6 +204,7 @@ class LLMService:
                     "No he podido analizar tu mensaje en este momento. "
                     "Si deseas, puedes reenviarlo en unos instantes."
                 ),
+                "error": f"{type(exc).__name__}: {exc}",
             }
 
     @staticmethod
