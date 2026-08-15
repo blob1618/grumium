@@ -493,7 +493,10 @@ class TestLimitMultiTurn:
         mock_clear.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_year_confirmation_ambiguous_reasks(self):
+    async def test_year_confirmation_unrelated_message_falls_through(self):
+        """Mensaje no relacionado mientras se espera confirmar el año no debe
+        secuestrar todos los mensajes: se abandona el flujo del límite, se limpia
+        el estado y el mensaje se procesa con normalidad."""
         pending = PendingLimit(
             sender_phone="12345",
             category=None,
@@ -511,10 +514,16 @@ class TestLimitMultiTurn:
                 new_callable=AsyncMock,
                 return_value=pending,
             ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ) as mock_clear,
         ):
             result = await process_incoming_message("12345", "no sé")
 
-        assert "¿Quieres crear un límite de gastos para Enero de 2027?" in result.reply_text
+        assert "¿Quieres crear un límite de gastos para Enero de 2027?" not in result.reply_text
+        assert result.service_invoked == "llm"
+        mock_clear.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_year_confirmation_no_pending(self):

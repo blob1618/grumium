@@ -1019,23 +1019,30 @@ async def process_incoming_message(
         pending = await ConversationService.get_pending_limit(sender_phone)
         if pending is None:
             await ConversationService.clear_state(sender_phone)
-            reply_text = "Se perdió el contexto. Podés volver a crear el límite."
-        else:
-            extracted_data = await LLMService.process_message(text_body)
-            intent = extracted_data.get("intent", "out_of_scope")
-            if intent == "reject_limit" or _is_cancel_request(text_body):
-                await ConversationService.clear_state(sender_phone)
-                reply_text = "Listo, no creé ningún límite de gasto."
-            elif intent == "confirm_limit":
-                reply_text = await _handle_create_limit(
-                    sender_phone,
-                    _limit_base_data(pending),
-                    last_limit=_last_limit_from_pending(pending),
-                    edit=pending.is_edit,
-                )
-            else:
-                reply_text = _year_confirmation_reply(pending.month, pending.year)
-        return DispatchResult(reply_text=reply_text, service_invoked="conversation")
+            return DispatchResult(
+                reply_text="Se perdió el contexto. Podés volver a crear el límite.",
+                service_invoked="conversation",
+            )
+        extracted_data = await LLMService.process_message(text_body)
+        intent = extracted_data.get("intent", "out_of_scope")
+        if intent == "reject_limit" or _is_cancel_request(text_body):
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text="Listo, no creé ningún límite de gasto.",
+                service_invoked="conversation",
+            )
+        if intent == "confirm_limit":
+            reply_text = await _handle_create_limit(
+                sender_phone,
+                _limit_base_data(pending),
+                last_limit=_last_limit_from_pending(pending),
+                edit=pending.is_edit,
+            )
+            return DispatchResult(reply_text=reply_text, service_invoked="conversation")
+        # El mensaje no responde la confirmación de año (saludo, gasto, otro tema):
+        # el flujo del límite quedó abandonado. Limpiar el estado para que no
+        # secuestre los mensajes siguientes y procesar normalmente (fall-through).
+        await ConversationService.clear_state(sender_phone)
 
     # ----------------------------------------------------------
     # Multi-turn STK-46: completar categoría y/o monto del límite
