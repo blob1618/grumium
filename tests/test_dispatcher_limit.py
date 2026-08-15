@@ -38,6 +38,7 @@ def limit_flow_patches(**overrides):
         awaiting_reminder=False,
         awaiting_limit_year=False,
         awaiting_limit_data=False,
+        awaiting_limit_delete_category=False,
         awaiting_limit_month=False,
     )
     defaults.update(overrides)
@@ -66,6 +67,11 @@ def limit_flow_patches(**overrides):
             "app.services.dispatcher.ConversationService.is_awaiting_limit_data",
             new_callable=AsyncMock,
             return_value=defaults["awaiting_limit_data"],
+        ),
+        patch(
+            "app.services.dispatcher.ConversationService.is_awaiting_limit_delete_category",
+            new_callable=AsyncMock,
+            return_value=defaults["awaiting_limit_delete_category"],
         ),
         patch(
             "app.services.dispatcher.ConversationService.is_awaiting_limit_month_selection",
@@ -400,10 +406,15 @@ class TestDeleteLimitFlow:
                     "reply_text": "procesando",
                 },
             ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_pending_limit_delete_category",
+                new_callable=AsyncMock,
+            ) as mock_pending,
         ):
             result = await process_incoming_message("12345", "eliminá un límite")
 
         assert "categoría" in result.reply_text.lower()
+        mock_pending.assert_awaited_once()
 
 
 class TestLimitMultiTurn:
@@ -652,3 +663,262 @@ class TestLimitMultiTurn:
             result = await process_incoming_message("12345", "no sé")
 
         assert "¿A cuál te referís?" in result.reply_text
+
+
+class TestLimitMultiTurnFixes:
+    @pytest.mark.asyncio
+    async def test_awaiting_limit_data_extracts_amount_from_plain_number(self):
+        """Flujo 1: '100000' suelto debe completar el monto sin depender del LLM."""
+        pending = PendingLimit(
+            sender_phone="12345",
+            category="Ocio",
+            amount=None,
+            month=8,
+            year=2026,
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_data=True,
+                llm={"intent": "expense", "amount": 100000, "limit_amount": None},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                return_value=created_result(
+                    category_name="Ocio",
+                    amount=Decimal("100000"),
+                ),
+            ) as mock_create,
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_limit",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "100000")
+
+        assert "Registré tu límite para" in result.reply_text
+        call_data = mock_create.call_args.args[1]
+        assert call_data["limit_amount"] == 100000
+        assert call_data["limit_category"] == "Ocio"
+
+    @pytest.mark.asyncio
+    async def test_awaiting_limit_data_extracts_amount_when_llm_ignores(self):
+        """Flujo 1: 'el limite es 100000' sin limit_amount del LLM."""
+        pending = PendingLimit(
+            sender_phone="12345",
+            category="Ocio",
+            amount=None,
+            month=8,
+            year=2026,
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_data=True,
+                llm={"intent": "out_of_scope", "limit_amount": None, "reply_text": "x"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                return_value=created_result(
+                    category_name="Ocio",
+                    amount=Decimal("100000"),
+                ),
+            ) as mock_create,
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_limit",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "el limite es 100000")
+
+        assert "Registré tu límite para" in result.reply_text
+        assert mock_create.call_args.args[1]["limit_amount"] == 100000
+
+    @pytest.mark.asyncio
+    async def test_awaiting_limit_data_cancel(self):
+        """Flujo 1: 'cancelalo' debe cancelar el flujo y limpiar el estado."""
+        pending = PendingLimit(
+            sender_phone="12345",
+            category="Ocio",
+            amount=None,
+            month=8,
+            year=2026,
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_data=True,
+                llm={"intent": "reject_limit", "reply_text": "no"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+        ):
+            result = await process_incoming_message("12345", "cancelalo")
+
+        assert "cancelé" in result.reply_text.lower()
+        mock_clear.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_awaiting_limit_delete_category_provides_category(self):
+        """Flujo 2: tras pedir la categoría, 'ocio' completa la eliminación por mes."""
+        pending_delete = PendingLimitDelete(
+            sender_phone="12345",
+            category_name=None,
+            month=9,
+            year=2026,
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_delete_category=True,
+                llm={"intent": "out_of_scope", "limit_category": None, "reply_text": "x"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit_delete",
+                new_callable=AsyncMock,
+                return_value=pending_delete,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.delete_limit",
+                return_value=LimitResult(
+                    status="deleted",
+                    message="ok",
+                    category_name="Ocio",
+                    month=9,
+                    year=2026,
+                ),
+            ) as mock_delete,
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "ocio")
+
+        assert "eliminé el límite de Ocio" in result.reply_text
+        assert mock_delete.call_args.args[1] == "ocio"
+        assert mock_delete.call_args.kwargs["month"] == 9
+
+    @pytest.mark.asyncio
+    async def test_awaiting_limit_month_selection_month_name_fallback(self):
+        """Flujo 2: 'el de septiembre' resuelve el mes 9 aunque el LLM no lo devuelva."""
+        pending_delete = PendingLimitDelete(
+            sender_phone="12345",
+            category_name="Ocio",
+            candidates=[{"limit_id": "b", "month": 9, "year": 2026, "amount": "300000"}],
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_month=True,
+                llm={"intent": "greeting", "limit_month": None, "reply_text": "hola"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit_delete",
+                new_callable=AsyncMock,
+                return_value=pending_delete,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.delete_limit",
+                return_value=LimitResult(
+                    status="deleted",
+                    message="ok",
+                    category_name="Ocio",
+                    month=9,
+                    year=2026,
+                ),
+            ) as mock_delete,
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "el de septiembre")
+
+        assert "eliminé el límite de Ocio" in result.reply_text
+        assert mock_delete.call_args.kwargs["month"] == 9
+
+    @pytest.mark.asyncio
+    async def test_change_limit_month_edits_existing_limit(self):
+        """Flujo 2: 'cambia el mes por agosto' debe editar el último límite, no crear otro."""
+        last_limit = LastCreatedLimit(
+            limit_id="abc-123",
+            sender_phone="12345",
+            category_name="Ocio",
+            amount=Decimal("300000"),
+            month=9,
+            year=2026,
+        )
+        with (
+            limit_flow_patches(
+                llm=create_limit_llm(intent="change_limit", limit_month=8),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_last_limit",
+                new_callable=AsyncMock,
+                return_value=last_limit,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                return_value=created_result(month=8),
+            ) as mock_create,
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_limit",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "cambia el mes por agosto")
+
+        assert result.intent == "change_limit"
+        assert "Agosto" in result.reply_text
+        assert mock_create.call_args.kwargs["last_limit"] is last_limit
+        assert mock_create.call_args.args[1]["limit_month"] == 8
+
+    @pytest.mark.asyncio
+    async def test_year_confirmation_edit_reuses_last_limit(self):
+        """Flujo 2: confirmar el año de una edición debe conservar el limit_id."""
+        pending = PendingLimit(
+            sender_phone="12345",
+            category="Ocio",
+            amount=Decimal("300000"),
+            month=1,
+            year=2027,
+            is_edit=True,
+            limit_id="abc-123",
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_year=True,
+                llm={"intent": "confirm_limit", "reply_text": "dale"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                return_value=created_result(month=1, year=2027),
+            ) as mock_create,
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_limit",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "si")
+
+        assert "Registró tu límite para" in result.reply_text
+        assert mock_create.call_args.kwargs["last_limit"].limit_id == "abc-123"
+        assert mock_create.call_args.kwargs["last_limit"].month == 1

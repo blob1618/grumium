@@ -76,6 +76,7 @@ class PendingLimit:
     month: int | None
     year: int | None
     is_edit: bool = False
+    limit_id: str | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -120,9 +121,16 @@ class PendingLimitDelete:
     sender_phone: str
     category_name: str
     candidates: list[dict] = field(default_factory=list)
+    month: int | None = None
+    year: int | None = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d["candidates"] = [
+            {k: (str(v) if isinstance(v, Decimal) else v) for k, v in c.items()}
+            for c in self.candidates
+        ]
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "PendingLimitDelete":
@@ -134,7 +142,7 @@ class ConversationState:
     """Estado de conversación de un usuario."""
     # step puede ser: "none" | "awaiting_category_confirmation" | "awaiting_reminder_data"
     #               | "awaiting_limit_year_confirmation" | "awaiting_limit_data"
-    #               | "awaiting_limit_month_selection"
+    #               | "awaiting_limit_month_selection" | "awaiting_limit_delete_category"
     step: str
     pending_movement: PendingMovement | None = None
     pending_reminder: PendingReminder | None = None
@@ -451,6 +459,25 @@ class ConversationService:
             pending_limit_delete=pending,
         )
         await cls.set_state(whatsapp_id, state)
+
+    @classmethod
+    async def set_pending_limit_delete_category(
+        cls,
+        whatsapp_id: str,
+        pending: PendingLimitDelete,
+    ) -> None:
+        """Fija el estado esperando la categoría del límite a eliminar."""
+        state = ConversationState(
+            step="awaiting_limit_delete_category",
+            pending_limit_delete=pending,
+        )
+        await cls.set_state(whatsapp_id, state)
+
+    @classmethod
+    async def is_awaiting_limit_delete_category(cls, whatsapp_id: str) -> bool:
+        """Consulta si el usuario debe indicar la categoría del límite a eliminar."""
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_limit_delete_category"
 
     @classmethod
     async def get_pending_limit_delete(

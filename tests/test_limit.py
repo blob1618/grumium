@@ -266,6 +266,112 @@ class TestCreateLimit:
         assert result.status == "needs_amount"
 
 
+class TestCreateLimitEditByLastLimit:
+    def _make_last_limit(self, limit: LimiteCategoria):
+        return type(
+            "LastLimit",
+            (),
+            {
+                "limit_id": str(limit.id),
+                "sender_phone": "5491111111111",
+                "category_name": "Comida",
+                "amount": limit.cantidad_max,
+                "month": limit.inicio_periodo.month,
+                "year": limit.inicio_periodo.year,
+            },
+        )()
+
+    def test_change_month_edits_existing_record_not_creates_new(self, db_context):
+        """Flujo 2: 'cambia el mes por agosto' debe mover el límite existente."""
+        session = db_context["session"]
+        create_user(session)
+        LimitService.create_limit(
+            "5491111111111",
+            limit_data(limit_month=9, limit_year=2026),
+            today=TODAY,
+        )
+        limite = session.query(LimiteCategoria).one()
+        last_limit = self._make_last_limit(limite)
+
+        result = LimitService.create_limit(
+            "5491111111111",
+            {"limit_month": 8},
+            last_limit=last_limit,
+            today=TODAY,
+        )
+
+        assert result.status == "updated"
+        assert result.limit_id == str(limite.id)
+        assert result.month == 8
+        assert session.query(LimiteCategoria).count() == 1
+        session.expire_all()
+        saved = session.query(LimiteCategoria).one()
+        assert saved.inicio_periodo == date(2026, 8, 1)
+        assert saved.fin_periodo == date(2026, 8, 31)
+        assert saved.cantidad_max == Decimal("300000")
+
+    def test_change_amount_edits_existing_record(self, db_context):
+        session = db_context["session"]
+        create_user(session)
+        LimitService.create_limit(
+            "5491111111111",
+            limit_data(),
+            today=TODAY,
+        )
+        limite = session.query(LimiteCategoria).one()
+        last_limit = self._make_last_limit(limite)
+
+        result = LimitService.create_limit(
+            "5491111111111",
+            {"limit_amount": 500000},
+            last_limit=last_limit,
+            today=TODAY,
+        )
+
+        assert result.status == "updated"
+        assert result.limit_id == str(limite.id)
+        assert session.query(LimiteCategoria).count() == 1
+        session.expire_all()
+        assert session.query(LimiteCategoria).one().cantidad_max == Decimal("500000")
+
+    def test_edit_year_confirmation_preserves_id(self, db_context):
+        """Editar a un mes pasado propone el año siguiente conservando el target."""
+        session = db_context["session"]
+        create_user(session)
+        LimitService.create_limit(
+            "5491111111111",
+            limit_data(limit_month=9, limit_year=2026),
+            today=TODAY,
+        )
+        limite = session.query(LimiteCategoria).one()
+        last_limit = self._make_last_limit(limite)
+
+        result = LimitService.create_limit(
+            "5491111111111",
+            {"limit_month": 1},
+            last_limit=last_limit,
+            today=TODAY,
+        )
+
+        assert result.status == "needs_year_confirmation"
+        assert result.proposed_month == 1
+        assert result.proposed_year == 2027
+        assert session.query(LimiteCategoria).count() == 1
+
+        confirmed = LimitService.create_limit(
+            "5491111111111",
+            {"limit_month": 1, "limit_year": 2027},
+            last_limit=last_limit,
+            today=TODAY,
+        )
+        assert confirmed.status == "updated"
+        assert confirmed.limit_id == str(limite.id)
+        assert session.query(LimiteCategoria).count() == 1
+        session.expire_all()
+        saved = session.query(LimiteCategoria).one()
+        assert saved.inicio_periodo == date(2027, 1, 1)
+
+
 class TestListLimits:
     def test_list_filters_expired_limits(self, db_context):
         session = db_context["session"]

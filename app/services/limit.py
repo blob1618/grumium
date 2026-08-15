@@ -226,6 +226,16 @@ class LimitService:
         resolved_year, resolved_month, needs_confirmation = cls._resolve_period(
             month, year, today
         )
+        # Edición: el mes lo indicó el usuario pero el año se heredó del último
+        # límite; si el mes ya pasó en ese año, proponer el siguiente.
+        if (
+            not needs_confirmation
+            and raw_month is not None
+            and raw_year is None
+            and (resolved_year, resolved_month) < (today.year, today.month)
+        ):
+            resolved_year = today.year + 1
+            needs_confirmation = True
         if needs_confirmation:
             return cls._result(
                 "needs_year_confirmation",
@@ -263,6 +273,36 @@ class LimitService:
                 resolved_month,
                 calendar.monthrange(resolved_year, resolved_month)[1],
             )
+
+            # Si la solicitud es una edición del último límite (last_limit),
+            # se modifica ese registro concreto (categoría, monto y período),
+            # en lugar de crear/actualizar otro por (categoría + período).
+            if last_limit is not None:
+                edit_id = cls._uuid(getattr(last_limit, "limit_id", None))
+                if edit_id is not None:
+                    target = (
+                        session.query(LimiteCategoria)
+                        .filter(
+                            LimiteCategoria.id == edit_id,
+                            LimiteCategoria.usuario_id == user.id,
+                        )
+                        .first()
+                    )
+                    if target is not None:
+                        target.cantidad_max = amount
+                        target.categoria_id = categoria_id
+                        target.inicio_periodo = inicio
+                        target.fin_periodo = fin
+                        session.commit()
+                        return cls._result(
+                            "updated",
+                            "limit updated",
+                            limit_id=str(target.id),
+                            category_name=category_name,
+                            amount=amount,
+                            month=resolved_month,
+                            year=resolved_year,
+                        )
 
             existing = (
                 session.query(LimiteCategoria)
@@ -429,7 +469,7 @@ class LimitService:
                             "limit_id": str(lim.id),
                             "month": lim.inicio_periodo.month,
                             "year": lim.inicio_periodo.year,
-                            "amount": lim.cantidad_max,
+                            "amount": str(lim.cantidad_max),
                         }
                         for lim in limits
                     ]

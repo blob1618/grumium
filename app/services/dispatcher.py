@@ -638,6 +638,82 @@ def _limit_delete_reply(result, category_name: str) -> str:
     return "No pude procesar la eliminación del límite."
 
 
+_CANCEL_PATTERNS = re.compile(
+    r'\b(?:cancel(?:ar|á|alo|ela)?|dej(?:a|á|alo|elo)?|olvid(?:a|á|alo|elo)?'
+    r'|anul(?:a|á|alo|ela)?|no quiero|no me interesa|para nada)\b',
+    re.IGNORECASE,
+)
+
+_MONTH_NAMES = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+
+
+def _is_cancel_request(text: str) -> bool:
+    if not text:
+        return False
+    return _CANCEL_PATTERNS.search(text) is not None
+
+
+def _extract_amount_from_text(text: str) -> float | None:
+    """Extrae un monto numérico del texto (con o sin separadores de miles)."""
+    if not text:
+        return None
+    match = re.search(r'\d[\d.,]*', text)
+    if not match:
+        return None
+    raw = match.group(0)
+    # "1.234.567,89" / "1234,56" / "100000" -> número plano con decimal '.'
+    if "," in raw and "." in raw:
+        raw = raw.replace(".", "").replace(",", ".")
+    elif "," in raw:
+        raw = raw.replace(",", ".")
+    elif "." in raw:
+        parts = raw.split(".")
+        if len(parts) == 2 and len(parts[1]) == 2:
+            raw = raw.replace(".", ".")
+        else:
+            raw = raw.replace(".", "")
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _extract_category_from_text(text: str) -> str | None:
+    """Usa el texto plano como categoría cuando el LLM no la detecta."""
+    candidate = text.strip().strip("!?.")
+    if not candidate or len(candidate) > 100:
+        return None
+    if _extract_amount_from_text(candidate) is not None:
+        return None
+    return candidate.lower()
+
+
+def _extract_month_from_text(text: str) -> int | None:
+    """Detecta el número de mes por su nombre dentro del texto."""
+    if not text:
+        return None
+    lowered = text.lower()
+    for name, month in _MONTH_NAMES.items():
+        if name in lowered:
+            return month
+    return None
+
+
 def _limit_base_data(pending: PendingLimit) -> dict:
     """Convierte un límite pendiente a dict de datos del LLM."""
     return {
@@ -646,6 +722,20 @@ def _limit_base_data(pending: PendingLimit) -> dict:
         "limit_month": pending.month,
         "limit_year": pending.year,
     }
+
+
+def _last_limit_from_pending(pending: PendingLimit) -> LastCreatedLimit | None:
+    """Reconstruye el último límite creado desde un pending de edición."""
+    if pending.limit_id is None:
+        return None
+    return LastCreatedLimit(
+        limit_id=pending.limit_id,
+        sender_phone=pending.sender_phone,
+        category_name=pending.category,
+        amount=pending.amount,
+        month=pending.month,
+        year=pending.year,
+    )
 
 
 async def _handle_create_limit(
@@ -689,6 +779,7 @@ async def _handle_create_limit(
             month=result.proposed_month,
             year=result.proposed_year,
             is_edit=edit,
+            limit_id=last_limit.limit_id if last_limit is not None else None,
         )
         await ConversationService.set_pending_limit(
             sender_phone,
@@ -711,6 +802,7 @@ async def _handle_create_limit(
             month=month,
             year=year,
             is_edit=edit,
+            limit_id=last_limit.limit_id if last_limit is not None else None,
         )
         await ConversationService.set_pending_limit(
             sender_phone,
@@ -756,10 +848,19 @@ async def _handle_list_limits(sender_phone: str) -> str:
 
 async def _handle_delete_limit(sender_phone: str, extracted_data: dict) -> str:
     category_name = extracted_data.get("limit_category")
-    if not category_name:
-        return "¿Qué límite querés eliminar? Indicame la categoría."
     month = extracted_data.get("limit_month")
     year = extracted_data.get("limit_year")
+    if not category_name:
+        await ConversationService.set_pending_limit_delete_category(
+            sender_phone,
+            PendingLimitDelete(
+                sender_phone=sender_phone,
+                category_name=None,
+                month=month,
+                year=year,
+            ),
+        )
+        return "¿Qué límite querés eliminar? Indicame la categoría."
     result = LimitService.delete_limit(sender_phone, category_name, month=month, year=year)
     if result.status == "needs_month_selection":
         await ConversationService.set_pending_limit_delete(
@@ -922,13 +1023,14 @@ async def process_incoming_message(
         else:
             extracted_data = await LLMService.process_message(text_body)
             intent = extracted_data.get("intent", "out_of_scope")
-            if intent == "reject_limit":
+            if intent == "reject_limit" or _is_cancel_request(text_body):
                 await ConversationService.clear_state(sender_phone)
                 reply_text = "Listo, no creé ningún límite de gasto."
             elif intent == "confirm_limit":
                 reply_text = await _handle_create_limit(
                     sender_phone,
                     _limit_base_data(pending),
+                    last_limit=_last_limit_from_pending(pending),
                     edit=pending.is_edit,
                 )
             else:
@@ -947,20 +1049,69 @@ async def process_incoming_message(
             reply_text = "Se perdió el contexto. Podés volver a crear el límite."
         else:
             extracted_data = await LLMService.process_message(text_body)
-            base = _limit_base_data(pending)
-            if base["limit_category"] is None and extracted_data.get("limit_category"):
-                base["limit_category"] = extracted_data.get("limit_category")
-            if base["limit_amount"] is None and extracted_data.get("limit_amount") is not None:
-                base["limit_amount"] = extracted_data.get("limit_amount")
-            if extracted_data.get("limit_month") is not None:
-                base["limit_month"] = extracted_data.get("limit_month")
-            if extracted_data.get("limit_year") is not None:
-                base["limit_year"] = extracted_data.get("limit_year")
-            reply_text = await _handle_create_limit(
-                sender_phone,
-                base,
-                edit=pending.is_edit,
-            )
+            intent = extracted_data.get("intent", "out_of_scope")
+
+            if intent == "reject_limit" or _is_cancel_request(text_body):
+                await ConversationService.clear_state(sender_phone)
+                reply_text = "Listo, cancelé la configuración del límite de gasto."
+            else:
+                base = _limit_base_data(pending)
+                if base["limit_category"] is None:
+                    base["limit_category"] = (
+                        extracted_data.get("limit_category")
+                        or _extract_category_from_text(text_body)
+                    )
+                if base["limit_amount"] is None:
+                    base["limit_amount"] = (
+                        extracted_data.get("limit_amount")
+                        or _extract_amount_from_text(text_body)
+                    )
+                if extracted_data.get("limit_month") is not None:
+                    base["limit_month"] = extracted_data.get("limit_month")
+                if extracted_data.get("limit_year") is not None:
+                    base["limit_year"] = extracted_data.get("limit_year")
+                reply_text = await _handle_create_limit(
+                    sender_phone,
+                    base,
+                    last_limit=_last_limit_from_pending(pending),
+                    edit=pending.is_edit,
+                )
+        return DispatchResult(reply_text=reply_text, service_invoked="conversation")
+
+    # ----------------------------------------------------------
+    # Multi-turn STK-46: el usuario debe indicar la categoría a eliminar
+    # ----------------------------------------------------------
+    is_awaiting_delete_category = await ConversationService.is_awaiting_limit_delete_category(sender_phone)
+
+    if is_awaiting_delete_category:
+        pending_delete = await ConversationService.get_pending_limit_delete(sender_phone)
+        if pending_delete is None:
+            await ConversationService.clear_state(sender_phone)
+            reply_text = "Se perdió el contexto de la eliminación. Volvé a indicarme qué límite querés eliminar."
+        else:
+            extracted_data = await LLMService.process_message(text_body)
+            category_name = extracted_data.get("limit_category") or _extract_category_from_text(text_body)
+            if not category_name:
+                reply_text = "¿Qué límite querés eliminar? Indicame la categoría."
+            else:
+                result = LimitService.delete_limit(
+                    sender_phone,
+                    category_name,
+                    month=pending_delete.month,
+                    year=pending_delete.year,
+                )
+                if result.status == "needs_month_selection":
+                    await ConversationService.set_pending_limit_delete(
+                        sender_phone,
+                        PendingLimitDelete(
+                            sender_phone=sender_phone,
+                            category_name=result.category_name or category_name,
+                            candidates=result.candidates,
+                        ),
+                    )
+                else:
+                    await ConversationService.clear_state(sender_phone)
+                reply_text = _limit_delete_reply(result, category_name)
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
     # ----------------------------------------------------------
@@ -976,6 +1127,8 @@ async def process_incoming_message(
         else:
             extracted_data = await LLMService.process_message(text_body)
             month = extracted_data.get("limit_month")
+            if month is None:
+                month = _extract_month_from_text(text_body)
             if month is None:
                 reply_text = _limit_selection_reply(
                     pending_delete.category_name,
