@@ -464,6 +464,52 @@ class TestLimitMultiTurn:
         mock_clear.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_year_confirmation_affirmative_fallback_creates(self):
+        """Si el LLM no devuelve confirm_limit para 'si' (lo clasifica como
+        out_of_scope), un 'si' textual debe confirmar y crear el límite."""
+        pending = PendingLimit(
+            sender_phone="12345",
+            category="Fiestas",
+            amount=Decimal("450000"),
+            month=6,
+            year=2027,
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_year=True,
+                llm={"intent": "out_of_scope", "reply_text": "x"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                return_value=created_result(
+                    category_name="Fiestas",
+                    amount=Decimal("450000"),
+                    month=6,
+                    year=2027,
+                ),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_limit",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+        ):
+            result = await process_incoming_message("12345", "si")
+
+        assert result.service_invoked == "conversation"
+        assert "Registré tu límite para" in result.reply_text
+        assert "Fiestas" in result.reply_text
+        mock_clear.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_year_confirmation_reject_cancels(self):
         pending = PendingLimit(
             sender_phone="12345",

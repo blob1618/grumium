@@ -667,6 +667,24 @@ def _is_cancel_request(text: str) -> bool:
     return _CANCEL_PATTERNS.search(text) is not None
 
 
+_CONFIRM_PATTERNS = re.compile(
+    r"\b(?:sí|si|dale|ok|okey|confirmo|confirmame|afirmativo|de acuerdo|claro|"
+    r"genial|perfecto|listo|bárbaro|barbaro|bueno|yes)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_confirm_request(text: str) -> bool:
+    """Detecta una respuesta afirmativa clara (sí/dale/ok) al confirmar un límite.
+
+    Se usa como respaldo cundo el LLM clasifica el 'sí' como out_of_scope/greeting
+    porque el mensaje suelto no trae contexto de la pregunta previa.
+    """
+    if not text:
+        return False
+    return _CONFIRM_PATTERNS.search(text) is not None
+
+
 def _extract_amount_from_text(text: str) -> float | None:
     """Extrae un monto numérico del texto (con o sin separadores de miles)."""
     if not text:
@@ -1031,7 +1049,9 @@ async def process_incoming_message(
                 reply_text="Listo, no creé ningún límite de gasto.",
                 service_invoked="conversation",
             )
-        if intent == "confirm_limit":
+        if intent == "confirm_limit" or (
+            intent in ("out_of_scope", "greeting") and _is_confirm_request(text_body)
+        ):
             reply_text = await _handle_create_limit(
                 sender_phone,
                 _limit_base_data(pending),
