@@ -86,6 +86,13 @@ class TestStreamlitAppEntrypoint:
         mock_user_sim.create_test_user.assert_not_called()
         mock_chat.assert_called_once_with(config)
 
+    def test_unregistered_user_deletes_simulated_user(self):
+        config = settings_mod.TestingConfig(user_registered=False)
+        _, _, mock_chat, mock_user_sim, _ = _import_app(config=config)
+
+        mock_user_sim.delete_test_user.assert_called_once_with(config.phone)
+        mock_chat.assert_called_once_with(config)
+
     def test_reset_db_request_clears_flag_and_toasts(self):
         fake_st, config, mock_chat, mock_user_sim, _ = _import_app(
             session_state={"reset_db_requested": True}

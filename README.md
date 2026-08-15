@@ -32,7 +32,7 @@ El flujo oficial de alta/vinculación de usuarios, las categorías default o per
 - Base de datos: SQLAlchemy ORM. El desarrollo local usa SQLite por defecto. Producción debe usar PostgreSQL, normalmente Supabase.
 - Jobs en background / caché: APScheduler y Redis.
 - Deploy: Docker y Render.
-- Tests / calidad: Pytest y Ruff.
+- Tests / calidad: Pytest y Ruff. Entorno de testing de WhatsApp en Streamlit (`testing/`), levantado solo con Docker o Podman.
 - Frontend: no hay frontend web en este repositorio por ahora. La interfaz del producto es WhatsApp.
 
 ## Mapa del repositorio
@@ -44,6 +44,7 @@ El flujo oficial de alta/vinculación de usuarios, las categorías default o per
 - `app/services/finance.py`: validación y persistencia de movimientos financieros y otras reglas de negocio.
 - `app/models/database.py`: engine, sesión y modelos SQLAlchemy.
 - `tests/`: tests del backend.
+- `testing/`: entorno de testing de WhatsApp en Streamlit contra el mismo backend, se inicia solo con Docker o Podman (ver `testing/README.md`).
 - `docs/database.md`: estado actual de la base de datos, esquema objetivo del MVP y decisiones pendientes.
 - `docs/architecture.md`: flujo de información y resumen de arquitectura del MVP.
 - `SUPABASE_SETUP.md`: guía de configuración de la base de datos.
@@ -74,7 +75,7 @@ Invoke-RestMethod http://127.0.0.1:8000/
 Respuesta esperada:
 
 ```json
-{"message":"Luka API is running"}
+{ "message": "Luka API is running" }
 ```
 
 Para macOS/Linux, usar `python3 -m venv .venv`, `source .venv/bin/activate`, y `cp .env.example .env`.
@@ -89,22 +90,28 @@ Para probar eventos reales de WhatsApp, Meta necesita una URL pública HTTPS. Us
 https://<url-pública>/webhook
 ```
 
+## Entorno de testing
+
+`testing/` contiene una app Streamlit que simula el flujo de WhatsApp de Luka contra el mismo backend, sin depender de la API real de Meta. La única forma de iniciarla es con Docker o Podman; streamlit se eliminó del `requirements.txt` raíz y ya no se puede levantar con `streamlit run` local.
+
+Ver [testing/README.md](testing/README.md) para la guía completa de configuración y uso (Docker y Podman).
+
 ## Variables de entorno
 
 Copiar `.env.example` a `.env` y completar solo lo que tu tarea necesite.
 
-| Variable | Requerida | Notas |
-| --- | --- | --- |
-| `WHATSAPP_VERIFY_TOKEN` | Sí para verificación del webhook | Token configurado en Meta y verificado por `GET /webhook`. |
-| `WHATSAPP_API_TOKEN` | Sí para enviar respuestas por WhatsApp | Token bearer de la API de Meta. |
-| `WHATSAPP_PHONE_ID` | Sí para enviar respuestas por WhatsApp | ID del número de teléfono de WhatsApp en Meta. |
-| `LLM_PROVIDER` | Opcional | `gemini` por defecto. También soporta `mistral`. |
-| `GEMINI_API_KEY` | Requerido si `LLM_PROVIDER=gemini` | API key de Gemini. |
-| `GEMINI_MODEL` | Opcional | Por defecto en `.env.example` es `gemini-2.0-flash`. |
-| `MISTRAL_API_KEY` | Requerido si `LLM_PROVIDER=mistral` | API key de Mistral. |
-| `MISTRAL_MODEL` | Opcional | Por defecto en `.env.example` es `mistral-small-latest`. |
-| `DATABASE_URL` | Opcional en local, requerido en producción | Por defecto `sqlite:///./luka.db`. Usar Supabase/PostgreSQL para entornos compartidos. |
-| `REDIS_URL` | Opcional en local, recomendado en producción | Por defecto `redis://localhost:6379`. La app loguea un error si Redis no está disponible pero igual arranca. |
+| Variable                | Requerida                                    | Notas                                                                                                        |
+| ----------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `WHATSAPP_VERIFY_TOKEN` | Sí para verificación del webhook             | Token configurado en Meta y verificado por `GET /webhook`.                                                   |
+| `WHATSAPP_API_TOKEN`    | Sí para enviar respuestas por WhatsApp       | Token bearer de la API de Meta.                                                                              |
+| `WHATSAPP_PHONE_ID`     | Sí para enviar respuestas por WhatsApp       | ID del número de teléfono de WhatsApp en Meta.                                                               |
+| `LLM_PROVIDER`          | Opcional                                     | `gemini` por defecto. También soporta `mistral`.                                                             |
+| `GEMINI_API_KEY`        | Requerido si `LLM_PROVIDER=gemini`           | API key de Gemini.                                                                                           |
+| `GEMINI_MODEL`          | Opcional                                     | Por defecto en `.env.example` es `gemini-2.0-flash`.                                                         |
+| `MISTRAL_API_KEY`       | Requerido si `LLM_PROVIDER=mistral`          | API key de Mistral.                                                                                          |
+| `MISTRAL_MODEL`         | Opcional                                     | Por defecto en `.env.example` es `mistral-small-latest`.                                                     |
+| `DATABASE_URL`          | Opcional en local, requerido en producción   | Por defecto `sqlite:///./luka.db`. Usar Supabase/PostgreSQL para entornos compartidos.                       |
+| `REDIS_URL`             | Opcional en local, recomendado en producción | Por defecto `redis://localhost:6379`. La app loguea un error si Redis no está disponible pero igual arranca. |
 
 Nunca subir `.env` ni secretos reales al repo.
 

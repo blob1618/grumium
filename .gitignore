@@ -222,5 +222,10 @@ Escenario.pdf
 Especificación de Requisitos.pdf
 
 .agents/*
+skills-lock.json
+.opencode/*
+.playwright-mcp/*
+.playwright/*
 .vscode/*
 luka.db
+testing_luka.db

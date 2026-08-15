@@ -23,6 +23,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - `app/services/conversation.py`: estado multi-turno en Redis (confirmación de categoría, recordatorio pendiente, rename).
 - `app/models/database.py`: engine, sesión y todos los modelos SQLAlchemy (un solo archivo).
 - `app/scheduler.py`: jobs en background (recordatorios cada 5 min).
+- `testing/`: entorno de testing aislado. App Streamlit (`testing/streamlit_app.py`) que simula el flujo de WhatsApp de Luka contra el mismo backend, con sidebar de configuración (provider/modelo LLM, simular usuario registrado, phone, nombre), paneles de debug (JSON del LLM, latencia, estado Redis, logs del dispatcher), simulador de usuario y reset de DB. Usa una DB SQLite aislada (`sqlite:///./testing_luka.db`). Solo se levanta con Docker/Podman (`testing/docker-compose.yml` + `testing/Dockerfile`, servicios `streamlit` en `:8501` y `redis` en `:6380`); tiene sus propios tests en `testing/tests/` y sus dependencias en `testing/requirements.txt`. Logos en `testing/public/`.
 
 ## Guías de ingeniería
 
@@ -32,11 +33,13 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - Los modelos/estructura de BD se actualizan en `app/models/database.py` (un solo archivo) con sesiones async correctas.
 
 ### Contrato DB MVP / Release 1
+
 - `public.movimientos_financieros` es la entidad central para ingresos y egresos; `public.usuario` es la tabla oficial de usuarios, mapeada por `public.usuario.whatsapp_id`.
 - No ejecutar SQL ni tocar Supabase directamente; todo cambio de schema se versiona primero (ver `docs/database.md` y `database/migrations/`).
 - `public.movimientos_financieros` tiene RLS habilitado; no asumir policies de acceso público (roles `anon`/`authenticated`). No hay frontend -> Supabase directo salvo nueva ADR.
 
 ### Invariantes del registro por texto
+
 - Flujo: WhatsApp webhook -> `LLMService` -> `FinanceService` -> `public.movimientos_financieros` -> respuesta.
 - `intent="expense"` se conserva por compatibilidad; `movement_type` define `ingreso`/`egreso`.
 - Confirmar el registro solo tras una persistencia exitosa; nunca confiar en `reply_text` del LLM.
@@ -51,14 +54,21 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - **Scheduler debe correr una sola vez, no por worker**: el `Dockerfile` usa `gunicorn -w 1 -k uvicorn.workers.UvicornWorker` a propósito. No agregar workers extras.
 - **`load_dotenv()` va ANTES de importar submódulos en `main.py`**; mantener ese orden si se tocan imports de `app.`.
 - En `main.py` hay dos ramas de dispatcher (STK-39 v2 con hint de categoría y el flujo legacy) que pueden superponerse; al tocar el webhook revisar que el `intent` no se procese dos veces.
+- **Streamlit NO está en el `requirements.txt` raíz**: solo vive en `testing/requirements.txt` (que incluye `-r ../requirements.txt` + streamlit). El entorno de testing se levanta únicamente con Docker/Podman; no correr `streamlit run` local con pip.
+- **`testing/streamlit_app.py` hardcodea `DATABASE_URL=sqlite:///./testing_luka.db`** (sobreescribe el `.env`). Es una DB SQLite aislada del entorno productivo (el compose la setea de nuevo en `environment`).
+- **El docker-compose del testing requiere `.env` en la raíz**: usa `env_file: ../.env`; sin ese archivo el compose falla.
+- **Los logos viven solo en `testing/public/`**: `_public_asset()` en `testing/components/` (chat.py y sidebar.py) resuelve `Path(__file__).resolve().parent.parent / "public"`, es decir `testing/public/`. No existe carpeta `public/` en la raíz del repo.
+- **Los tests del entorno de testing viven en `testing/tests/`** (no en `tests/`).
 
 ## Verificar cambios
 
 - Lint + tests (same as GitHub Actions en pushes y PR a `main`; `WHATSAPP_VERIFY_TOKEN` se setea con valor de test por CI):
+
 ```powershell
 python -m ruff check .
 python -m pytest -v
 ```
+
 - Tests NO requieren red real: usan SQLite en memoria y `monkeypatch.setattr(...SessionLocal...)`; LLM, WhatsApp y Redis se mockean con `AsyncMock`/`unittest.mock`. Los tests de `ConversationService` mockean el cliente Redis.
 - Para levantar local: venv Python 3.11, `pip install -r requirements.txt`, copiar `.env.example` a `.env`, `python -m uvicorn app.main:app --reload`. En local, `DATABASE_URL` por defecto `sqlite:///./luka.db`.
 

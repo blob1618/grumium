@@ -9,8 +9,8 @@ from testing.config.settings import TestingConfig, get_available_models
 
 
 def _public_asset(filename: str) -> Path:
-    """Resolve a file inside the repo's public/ directory."""
-    return Path(__file__).resolve().parent.parent.parent / "public" / filename
+    """Resolve a file inside the testing/public/ directory."""
+    return Path(__file__).resolve().parent.parent / "public" / filename
 
 
 def get_available_providers() -> list[str]:

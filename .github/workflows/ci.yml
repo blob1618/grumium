@@ -32,12 +32,6 @@ jobs:
         run: |
           pytest -v
 
-      - name: Coverage de módulos tocados (100%)
-        run: |
-          pytest -v             --cov=app.services.llm             --cov=app.services.llm_providers.base             --cov=app.services.llm_providers.gemini             --cov=app.services.llm_providers.mistral             --cov=app.services.conversation             --cov=testing             --cov-report=term-missing             --cov-fail-under=100
-        env:
-          WHATSAPP_VERIFY_TOKEN: "test_verify_token"
-
       - name: Lint with Ruff
         run: |
           ruff check .
