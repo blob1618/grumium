@@ -119,7 +119,7 @@ El alta, register, login y vinculación inicial de usuarios no forman parte de S
 
 ## Deduplicación e índices
 
-El backend consulta `whatsapp_message_id` antes de insertar. Si ya existe, devuelve `duplicate` y evita una segunda fila. Cuando Meta reenvía el mismo evento, el webhook puede enviar una segunda respuesta visible indicando el duplicado; este comportamiento sigue pendiente de corrección.
+El backend consulta `whatsapp_message_id` antes de insertar. Si ya existe, devuelve `duplicate` y evita una segunda fila. Cuando Meta reenvía un mensaje ya persistido, el reintento se procesa en silencio: se suprime la respuesta visible porque la confirmación ya se envió en la primera entrega.
 
 La migración versionada `database/migrations/001_mvp_movimientos_financieros.sql` y el ORM declaran un índice único parcial sobre `movimientos_financieros.whatsapp_message_id`. La migración también declara índices para búsqueda de usuario y consultas de movimientos.
 

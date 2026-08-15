@@ -68,18 +68,94 @@ class PendingReminder:
 
 
 @dataclass
+class PendingLimit:
+    """Datos parciales de un límite de gasto pendiente de completar/confirmar (multi-turno)."""
+    sender_phone: str
+    category: str | None
+    amount: Decimal | None
+    month: int | None
+    year: int | None
+    is_edit: bool = False
+    limit_id: str | None = None
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["amount"] = str(d["amount"]) if d["amount"] is not None else None
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PendingLimit":
+        raw = dict(d)
+        raw["amount"] = Decimal(str(raw["amount"])) if raw.get("amount") is not None else None
+        return cls(**raw)
+
+
+@dataclass
+class LastCreatedLimit:
+    """
+    Datos del último límite creado, para permitir editarlo sin diálogo previo
+    (STK-46: "¿No te convence algo? Indícame y lo cambiamos.").
+    """
+    limit_id: str
+    sender_phone: str
+    category_name: str
+    amount: Decimal
+    month: int
+    year: int
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["amount"] = str(d["amount"])
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LastCreatedLimit":
+        raw = dict(d)
+        raw["amount"] = Decimal(str(raw["amount"]))
+        return cls(**raw)
+
+
+@dataclass
+class PendingLimitDelete:
+    """Contexto de una eliminación de límite cuando hay que elegir el mes."""
+    sender_phone: str
+    category_name: str
+    candidates: list[dict] = field(default_factory=list)
+    month: int | None = None
+    year: int | None = None
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["candidates"] = [
+            {k: (str(v) if isinstance(v, Decimal) else v) for k, v in c.items()}
+            for c in self.candidates
+        ]
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PendingLimitDelete":
+        return cls(**dict(d))
+
+
+@dataclass
 class ConversationState:
     """Estado de conversación de un usuario."""
     # step puede ser: "none" | "awaiting_category_confirmation" | "awaiting_reminder_data"
+    #               | "awaiting_limit_year_confirmation" | "awaiting_limit_data"
+    #               | "awaiting_limit_month_selection" | "awaiting_limit_delete_category"
     step: str
     pending_movement: PendingMovement | None = None
     pending_reminder: PendingReminder | None = None
+    pending_limit: PendingLimit | None = None
+    pending_limit_delete: PendingLimitDelete | None = None
 
     def to_dict(self) -> dict:
         return {
             "step": self.step,
             "pending_movement": self.pending_movement.to_dict() if self.pending_movement else None,
             "pending_reminder": self.pending_reminder.to_dict() if self.pending_reminder else None,
+            "pending_limit": self.pending_limit.to_dict() if self.pending_limit else None,
+            "pending_limit_delete": self.pending_limit_delete.to_dict() if self.pending_limit_delete else None,
         }
 
     @classmethod
@@ -90,11 +166,29 @@ class ConversationState:
         pr = None
         if d.get("pending_reminder"):
             pr = PendingReminder.from_dict(d["pending_reminder"])
-        return cls(step=d.get("step", "none"), pending_movement=pm, pending_reminder=pr)
+        pl = None
+        if d.get("pending_limit"):
+            pl = PendingLimit.from_dict(d["pending_limit"])
+        pld = None
+        if d.get("pending_limit_delete"):
+            pld = PendingLimitDelete.from_dict(d["pending_limit_delete"])
+        return cls(
+            step=d.get("step", "none"),
+            pending_movement=pm,
+            pending_reminder=pr,
+            pending_limit=pl,
+            pending_limit_delete=pld,
+        )
 
     @classmethod
     def empty(cls) -> "ConversationState":
-        return cls(step="none", pending_movement=None, pending_reminder=None)
+        return cls(
+            step="none",
+            pending_movement=None,
+            pending_reminder=None,
+            pending_limit=None,
+            pending_limit_delete=None,
+        )
 
 
 @dataclass
@@ -129,6 +223,7 @@ class LastRegisteredMovement:
 
 CONVERSATION_TTL = timedelta(minutes=30)
 LAST_MOVEMENT_TTL = timedelta(minutes=60)
+LAST_LIMIT_TTL = timedelta(minutes=60)
 
 
 def _key(whatsapp_id: str) -> str:
@@ -137,6 +232,10 @@ def _key(whatsapp_id: str) -> str:
 
 def _last_movement_key(whatsapp_id: str) -> str:
     return f"last_movement:{whatsapp_id}"
+
+
+def _last_limit_key(whatsapp_id: str) -> str:
+    return f"last_limit:{whatsapp_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -308,3 +407,120 @@ class ConversationService:
         """Obtiene los datos del recordatorio original a renombrar."""
         state = await cls.get_state(whatsapp_id)
         return state.pending_reminder
+
+    # ------------------------------------------------------------------
+    # Límites de gasto pendientes (STK-46)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def set_pending_limit(
+        cls,
+        whatsapp_id: str,
+        pending: PendingLimit,
+        step: str,
+    ) -> None:
+        """Fija el estado de límite pendiente con el paso indicado."""
+        state = ConversationState(step=step, pending_limit=pending)
+        await cls.set_state(whatsapp_id, state)
+
+    @classmethod
+    async def get_pending_limit(cls, whatsapp_id: str) -> PendingLimit | None:
+        """Obtiene el límite pendiente si existe."""
+        state = await cls.get_state(whatsapp_id)
+        return state.pending_limit
+
+    @classmethod
+    async def is_awaiting_limit_year_confirmation(cls, whatsapp_id: str) -> bool:
+        """El usuario debe confirmar si aplica el límite al año siguiente."""
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_limit_year_confirmation"
+
+    @classmethod
+    async def is_awaiting_limit_data(cls, whatsapp_id: str) -> bool:
+        """El usuario debe completar categoría y/o monto del límite."""
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_limit_data"
+
+    @classmethod
+    async def is_awaiting_limit_month_selection(cls, whatsapp_id: str) -> bool:
+        """El usuario debe elegir a qué mes de límite se refiere (delete)."""
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_limit_month_selection"
+
+    @classmethod
+    async def set_pending_limit_delete(
+        cls,
+        whatsapp_id: str,
+        pending: PendingLimitDelete,
+    ) -> None:
+        """Fija el estado de selección de mes para eliminar un límite."""
+        state = ConversationState(
+            step="awaiting_limit_month_selection",
+            pending_limit_delete=pending,
+        )
+        await cls.set_state(whatsapp_id, state)
+
+    @classmethod
+    async def set_pending_limit_delete_category(
+        cls,
+        whatsapp_id: str,
+        pending: PendingLimitDelete,
+    ) -> None:
+        """Fija el estado esperando la categoría del límite a eliminar."""
+        state = ConversationState(
+            step="awaiting_limit_delete_category",
+            pending_limit_delete=pending,
+        )
+        await cls.set_state(whatsapp_id, state)
+
+    @classmethod
+    async def is_awaiting_limit_delete_category(cls, whatsapp_id: str) -> bool:
+        """Consulta si el usuario debe indicar la categoría del límite a eliminar."""
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_limit_delete_category"
+
+    @classmethod
+    async def get_pending_limit_delete(
+        cls,
+        whatsapp_id: str,
+    ) -> PendingLimitDelete | None:
+        """Obtiene el contexto de eliminación pendiente."""
+        state = await cls.get_state(whatsapp_id)
+        return state.pending_limit_delete
+
+    # ------------------------------------------------------------------
+    # Último límite creado (para editarlo sin diálogo previo, STK-46)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def set_last_limit(cls, whatsapp_id: str, limit: LastCreatedLimit) -> None:
+        """Guarda el último límite creado para permitir su edición."""
+        try:
+            client = await cls._get_client()
+            raw = json.dumps(limit.to_dict())
+            await client.setex(_last_limit_key(whatsapp_id), LAST_LIMIT_TTL, raw)
+        except Exception as exc:
+            print(f"[ConversationService] set_last_limit error: {type(exc).__name__}: {exc}")
+
+    @classmethod
+    async def get_last_limit(cls, whatsapp_id: str) -> LastCreatedLimit | None:
+        """Obtiene el último límite creado."""
+        try:
+            client = await cls._get_client()
+            raw = await client.get(_last_limit_key(whatsapp_id))
+            if raw is None:
+                return None
+            d = json.loads(raw)
+            return LastCreatedLimit.from_dict(d)
+        except Exception as exc:
+            print(f"[ConversationService] get_last_limit error: {type(exc).__name__}: {exc}")
+            return None
+
+    @classmethod
+    async def clear_last_limit(cls, whatsapp_id: str) -> None:
+        """Elimina el último límite creado."""
+        try:
+            client = await cls._get_client()
+            await client.delete(_last_limit_key(whatsapp_id))
+        except Exception as exc:
+            print(f"[ConversationService] clear_last_limit error: {type(exc).__name__}: {exc}")

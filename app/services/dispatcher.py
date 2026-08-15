@@ -13,12 +13,16 @@ from sqlalchemy.sql import func
 
 from app.services.conversation import (
     ConversationService,
+    LastCreatedLimit,
     LastRegisteredMovement,
+    PendingLimit,
+    PendingLimitDelete,
     PendingMovement,
     PendingReminder,
 )
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService
 from app.services.finance import FinanceService, MovementRegistrationResult
+from app.services.limit import LimitService
 from app.services.llm import LLMService
 from app.services.onboarding import OnboardingDecision, OnboardingService
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService
@@ -119,6 +123,20 @@ def _registration_reply(
         )
 
     return extracted_data.get("reply_text") or "No pude interpretar ese mensaje como un movimiento financiero."
+
+
+def _registration_dispatch_reply(
+    result: MovementRegistrationResult,
+    extracted_data: dict,
+) -> str:
+    """
+    Responde al registro. Un duplicado (mismo whatsapp_message_id ya persistido)
+    es un reintento/reenvío de Meta de un mensaje ya procesado: la confirmación ya
+    se envió en la primera entrega, así que se suprime la respuesta visible.
+    """
+    if result.status == "duplicate":
+        return ""
+    return _registration_reply(result, extracted_data)
 
 
 def _safe_non_stk35_reply(extracted_data: dict) -> str:
@@ -511,7 +529,367 @@ async def _register_and_reply_with_hint(
         reply += f"\n{_category_hint_reply()}"
         return reply
 
-    return _registration_reply(result, extracted_data)
+    return _registration_dispatch_reply(result, extracted_data)
+
+
+# ---------------------------------------------------------------------------
+# STK-46: Helpers de límites de gasto por categoría
+# ---------------------------------------------------------------------------
+
+
+def _format_limit_amount(amount) -> str:
+    """Formatea un monto con separador de miles '.' y decimales ',' (es-AR)."""
+    try:
+        decimal_amount = Decimal(str(amount))
+    except (InvalidOperation, ValueError):
+        return str(amount)
+
+    if decimal_amount == decimal_amount.to_integral_value():
+        decimal_amount = decimal_amount.quantize(Decimal("1"))
+    else:
+        decimal_amount = decimal_amount.quantize(Decimal("0.01"))
+
+    formatted = f"{decimal_amount:,.2f}"
+    return formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _current_year() -> int:
+    from datetime import date
+
+    return date.today().year
+
+
+def _limit_month_label(month: int, year: int) -> str:
+    return LimitService.month_label(month, year, _current_year())
+
+
+def _limit_registered_reply(
+    category_name: str,
+    amount,
+    month: int,
+    year: int,
+    *,
+    edit: bool = False,
+) -> str:
+    label = _limit_month_label(month, year)
+    amount_text = _format_limit_amount(amount)
+    if edit:
+        reply = (
+            f"✅ Listo, se Registró tu límite para {label}. "
+            f"📁 Categoría: {category_name}. 🎯 Límite a gastar: ${amount_text}."
+        )
+    else:
+        reply = (
+            f"✅ Registré tu límite para {label}. "
+            f"📁 Categoría: {category_name}. 🎯 Límite a gastar: ${amount_text}."
+        )
+        reply += "\n¿No te convence algo? Indícame y lo cambiamos."
+    return reply
+
+
+def _year_confirmation_reply(month: int, year: int) -> str:
+    name = LimitService.month_label(month, year, _current_year()).split()[0]
+    return f"⏩ ¿Quieres crear un límite de gastos para {name} de {year}?"
+
+
+def _limit_missing_reply(result) -> str:
+    if result.status == "needs_category":
+        return "¿A qué categoría querés aplicar el límite?"
+    if result.status == "needs_amount":
+        if result.category_name:
+            return f"¿Cuál es el monto máximo del límite para {result.category_name}?"
+        return "¿Cuál es el monto máximo del límite?"
+    return "Necesito que me completes la categoría o el monto del límite."
+
+
+def _limit_list_reply(result) -> str:
+    limits = result.limits or []
+    if not limits:
+        return "No tenés límites de gasto definidos por ahora."
+    lines = ["🎯 *Tus límites de gasto:*"]
+    for entry in limits:
+        amount = _format_limit_amount(entry.amount)
+        label = _limit_month_label(entry.month, entry.year)
+        lines.append(f"• {entry.category_name} — ${amount} — {label}")
+    return "\n".join(lines)
+
+
+def _limit_selection_reply(category_name: str, candidates: list[dict]) -> str:
+    lines = [f"Tengo varios límites de {category_name}. ¿A cuál te referís?"]
+    for candidate in candidates:
+        label = _limit_month_label(candidate["month"], candidate["year"])
+        amount = _format_limit_amount(candidate["amount"])
+        lines.append(f"• {label} — ${amount}")
+    return "\n".join(lines)
+
+
+def _limit_delete_reply(result, category_name: str) -> str:
+    if result.status == "deleted":
+        label = _limit_month_label(result.month, result.year)
+        return f"✅ Listo, eliminé el límite de {result.category_name or category_name} de {label}."
+    if result.status == "not_found":
+        return f"No encontré un límite de {category_name} para eliminar."
+    if result.status == "needs_month_selection":
+        return _limit_selection_reply(category_name, result.candidates)
+    if result.status == "user_not_found":
+        return "No encontré una cuenta vinculada a este WhatsApp."
+    if result.status == "persistence_error":
+        return "Hubo un problema eliminando el límite. Intentá nuevamente en unos minutos."
+    return "No pude procesar la eliminación del límite."
+
+
+_CANCEL_PATTERNS = re.compile(
+    r'\b(?:cancel(?:ar|á|alo|ela)?|dej(?:a|á|alo|elo)?|olvid(?:a|á|alo|elo)?'
+    r'|anul(?:a|á|alo|ela)?|no quiero|no me interesa|para nada)\b',
+    re.IGNORECASE,
+)
+
+_MONTH_NAMES = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+
+
+def _is_cancel_request(text: str) -> bool:
+    if not text:
+        return False
+    return _CANCEL_PATTERNS.search(text) is not None
+
+
+_CONFIRM_PATTERNS = re.compile(
+    r"\b(?:sí|si|dale|ok|okey|confirmo|confirmame|afirmativo|de acuerdo|claro|"
+    r"genial|perfecto|listo|bárbaro|barbaro|bueno|yes)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_confirm_request(text: str) -> bool:
+    """Detecta una respuesta afirmativa clara (sí/dale/ok) al confirmar un límite.
+
+    Se usa como respaldo cundo el LLM clasifica el 'sí' como out_of_scope/greeting
+    porque el mensaje suelto no trae contexto de la pregunta previa.
+    """
+    if not text:
+        return False
+    return _CONFIRM_PATTERNS.search(text) is not None
+
+
+def _extract_amount_from_text(text: str) -> float | None:
+    """Extrae un monto numérico del texto (con o sin separadores de miles)."""
+    if not text:
+        return None
+    match = re.search(r'\d[\d.,]*', text)
+    if not match:
+        return None
+    raw = match.group(0)
+    # "1.234.567,89" / "1234,56" / "100000" -> número plano con decimal '.'
+    if "," in raw and "." in raw:
+        raw = raw.replace(".", "").replace(",", ".")
+    elif "," in raw:
+        raw = raw.replace(",", ".")
+    elif "." in raw:
+        parts = raw.split(".")
+        if len(parts) == 2 and len(parts[1]) == 2:
+            raw = raw.replace(".", ".")
+        else:
+            raw = raw.replace(".", "")
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _extract_category_from_text(text: str) -> str | None:
+    """Usa el texto plano como categoría cuando el LLM no la detecta."""
+    candidate = text.strip().strip("!?.")
+    if not candidate or len(candidate) > 100:
+        return None
+    if _extract_amount_from_text(candidate) is not None:
+        return None
+    return candidate.lower()
+
+
+def _extract_month_from_text(text: str) -> int | None:
+    """Detecta el número de mes por su nombre dentro del texto."""
+    if not text:
+        return None
+    lowered = text.lower()
+    for name, month in _MONTH_NAMES.items():
+        if name in lowered:
+            return month
+    return None
+
+
+def _limit_base_data(pending: PendingLimit) -> dict:
+    """Convierte un límite pendiente a dict de datos del LLM."""
+    return {
+        "limit_category": pending.category,
+        "limit_amount": float(pending.amount) if pending.amount is not None else None,
+        "limit_month": pending.month,
+        "limit_year": pending.year,
+    }
+
+
+def _last_limit_from_pending(pending: PendingLimit) -> LastCreatedLimit | None:
+    """Reconstruye el último límite creado desde un pending de edición."""
+    if pending.limit_id is None:
+        return None
+    return LastCreatedLimit(
+        limit_id=pending.limit_id,
+        sender_phone=pending.sender_phone,
+        category_name=pending.category,
+        amount=pending.amount,
+        month=pending.month,
+        year=pending.year,
+    )
+
+
+async def _handle_create_limit(
+    sender_phone: str,
+    extracted_data: dict,
+    last_limit: LastCreatedLimit | None = None,
+    edit: bool | None = None,
+) -> str:
+    """Crea o edita un límite de gasto, orquestando los pasos multi-turno."""
+    if edit is None:
+        edit = last_limit is not None
+
+    result = LimitService.create_limit(sender_phone, extracted_data, last_limit=last_limit)
+
+    if result.status in ("created", "updated"):
+        await ConversationService.set_last_limit(
+            sender_phone,
+            LastCreatedLimit(
+                limit_id=result.limit_id,
+                sender_phone=sender_phone,
+                category_name=result.category_name,
+                amount=result.amount,
+                month=result.month,
+                year=result.year,
+            ),
+        )
+        await ConversationService.clear_state(sender_phone)
+        return _limit_registered_reply(
+            result.category_name,
+            result.amount,
+            result.month,
+            result.year,
+            edit=edit,
+        )
+
+    if result.status == "needs_year_confirmation":
+        pending = PendingLimit(
+            sender_phone=sender_phone,
+            category=result.category_name,
+            amount=result.amount,
+            month=result.proposed_month,
+            year=result.proposed_year,
+            is_edit=edit,
+            limit_id=last_limit.limit_id if last_limit is not None else None,
+        )
+        await ConversationService.set_pending_limit(
+            sender_phone,
+            pending,
+            step="awaiting_limit_year_confirmation",
+        )
+        return _year_confirmation_reply(result.proposed_month, result.proposed_year)
+
+    if result.status in ("needs_category", "needs_amount"):
+        month = extracted_data.get("limit_month")
+        year = extracted_data.get("limit_year")
+        if month is None and last_limit is not None:
+            month = last_limit.month
+        if year is None and last_limit is not None:
+            year = last_limit.year
+        pending = PendingLimit(
+            sender_phone=sender_phone,
+            category=result.category_name,
+            amount=result.amount,
+            month=month,
+            year=year,
+            is_edit=edit,
+            limit_id=last_limit.limit_id if last_limit is not None else None,
+        )
+        await ConversationService.set_pending_limit(
+            sender_phone,
+            pending,
+            step="awaiting_limit_data",
+        )
+        return _limit_missing_reply(result)
+
+    if result.status == "user_not_found":
+        return "No encontré una cuenta vinculada a este WhatsApp."
+    if result.status == "persistence_error":
+        return "Hubo un problema guardando tu límite. Intentá nuevamente en unos minutos."
+    return "No pude procesar tu solicitud de límite."
+
+
+async def _handle_change_limit(sender_phone: str, extracted_data: dict) -> str:
+    """Edita el último límite creado con los campos nuevos del usuario."""
+    last_limit = await ConversationService.get_last_limit(sender_phone)
+    if last_limit is None:
+        return (
+            "No tengo un límite reciente para cambiar. "
+            "Podés crear uno así: 'poné un límite de 300000 para ropa'."
+        )
+    return await _handle_create_limit(sender_phone, extracted_data, last_limit=last_limit)
+
+
+async def _handle_list_limits(sender_phone: str) -> str:
+    from app.models.database import SessionLocal, Usuario
+
+    session = SessionLocal()
+    try:
+        user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+        if user is None:
+            return "No encontré tu cuenta."
+        result = LimitService.list_limits(user.id)
+        return _limit_list_reply(result)
+    except Exception as exc:
+        print(f"[LIMIT_LIST] Error: {type(exc).__name__}: {exc}")
+        return "Hubo un problema consultando tus límites."
+    finally:
+        session.close()
+
+
+async def _handle_delete_limit(sender_phone: str, extracted_data: dict) -> str:
+    category_name = extracted_data.get("limit_category")
+    month = extracted_data.get("limit_month")
+    year = extracted_data.get("limit_year")
+    if not category_name:
+        await ConversationService.set_pending_limit_delete_category(
+            sender_phone,
+            PendingLimitDelete(
+                sender_phone=sender_phone,
+                category_name=None,
+                month=month,
+                year=year,
+            ),
+        )
+        return "¿Qué límite querés eliminar? Indicame la categoría."
+    result = LimitService.delete_limit(sender_phone, category_name, month=month, year=year)
+    if result.status == "needs_month_selection":
+        await ConversationService.set_pending_limit_delete(
+            sender_phone,
+            PendingLimitDelete(
+                sender_phone=sender_phone,
+                category_name=result.category_name or category_name,
+                candidates=result.candidates,
+            ),
+        )
+    return _limit_delete_reply(result, category_name)
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +1028,150 @@ async def process_incoming_message(
                 reply_text = _reminder_creation_reply(reminder_result, llm_data)
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
+    # ----------------------------------------------------------
+    # Multi-turn STK-46: confirmar el año de un límite para un mes pasado
+    # ----------------------------------------------------------
+    is_awaiting_limit_year = await ConversationService.is_awaiting_limit_year_confirmation(sender_phone)
+
+    if is_awaiting_limit_year:
+        pending = await ConversationService.get_pending_limit(sender_phone)
+        if pending is None:
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text="Se perdió el contexto. Podés volver a crear el límite.",
+                service_invoked="conversation",
+            )
+        extracted_data = await LLMService.process_message(text_body)
+        intent = extracted_data.get("intent", "out_of_scope")
+        if intent == "reject_limit" or _is_cancel_request(text_body):
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text="Listo, no creé ningún límite de gasto.",
+                service_invoked="conversation",
+            )
+        if intent == "confirm_limit" or (
+            intent in ("out_of_scope", "greeting") and _is_confirm_request(text_body)
+        ):
+            reply_text = await _handle_create_limit(
+                sender_phone,
+                _limit_base_data(pending),
+                last_limit=_last_limit_from_pending(pending),
+                edit=pending.is_edit,
+            )
+            return DispatchResult(reply_text=reply_text, service_invoked="conversation")
+        # El mensaje no responde la confirmación de año (saludo, gasto, otro tema):
+        # el flujo del límite quedó abandonado. Limpiar el estado para que no
+        # secuestre los mensajes siguientes y procesar normalmente (fall-through).
+        await ConversationService.clear_state(sender_phone)
+
+    # ----------------------------------------------------------
+    # Multi-turn STK-46: completar categoría y/o monto del límite
+    # ----------------------------------------------------------
+    is_awaiting_limit_data = await ConversationService.is_awaiting_limit_data(sender_phone)
+
+    if is_awaiting_limit_data:
+        pending = await ConversationService.get_pending_limit(sender_phone)
+        if pending is None:
+            await ConversationService.clear_state(sender_phone)
+            reply_text = "Se perdió el contexto. Podés volver a crear el límite."
+        else:
+            extracted_data = await LLMService.process_message(text_body)
+            intent = extracted_data.get("intent", "out_of_scope")
+
+            if intent == "reject_limit" or _is_cancel_request(text_body):
+                await ConversationService.clear_state(sender_phone)
+                reply_text = "Listo, cancelé la configuración del límite de gasto."
+            else:
+                base = _limit_base_data(pending)
+                if base["limit_category"] is None:
+                    base["limit_category"] = (
+                        extracted_data.get("limit_category")
+                        or _extract_category_from_text(text_body)
+                    )
+                if base["limit_amount"] is None:
+                    base["limit_amount"] = (
+                        extracted_data.get("limit_amount")
+                        or _extract_amount_from_text(text_body)
+                    )
+                if extracted_data.get("limit_month") is not None:
+                    base["limit_month"] = extracted_data.get("limit_month")
+                if extracted_data.get("limit_year") is not None:
+                    base["limit_year"] = extracted_data.get("limit_year")
+                reply_text = await _handle_create_limit(
+                    sender_phone,
+                    base,
+                    last_limit=_last_limit_from_pending(pending),
+                    edit=pending.is_edit,
+                )
+        return DispatchResult(reply_text=reply_text, service_invoked="conversation")
+
+    # ----------------------------------------------------------
+    # Multi-turn STK-46: el usuario debe indicar la categoría a eliminar
+    # ----------------------------------------------------------
+    is_awaiting_delete_category = await ConversationService.is_awaiting_limit_delete_category(sender_phone)
+
+    if is_awaiting_delete_category:
+        pending_delete = await ConversationService.get_pending_limit_delete(sender_phone)
+        if pending_delete is None:
+            await ConversationService.clear_state(sender_phone)
+            reply_text = "Se perdió el contexto de la eliminación. Volvé a indicarme qué límite querés eliminar."
+        else:
+            extracted_data = await LLMService.process_message(text_body)
+            category_name = extracted_data.get("limit_category") or _extract_category_from_text(text_body)
+            if not category_name:
+                reply_text = "¿Qué límite querés eliminar? Indicame la categoría."
+            else:
+                result = LimitService.delete_limit(
+                    sender_phone,
+                    category_name,
+                    month=pending_delete.month,
+                    year=pending_delete.year,
+                )
+                if result.status == "needs_month_selection":
+                    await ConversationService.set_pending_limit_delete(
+                        sender_phone,
+                        PendingLimitDelete(
+                            sender_phone=sender_phone,
+                            category_name=result.category_name or category_name,
+                            candidates=result.candidates,
+                        ),
+                    )
+                else:
+                    await ConversationService.clear_state(sender_phone)
+                reply_text = _limit_delete_reply(result, category_name)
+        return DispatchResult(reply_text=reply_text, service_invoked="conversation")
+
+    # ----------------------------------------------------------
+    # Multi-turn STK-46: elegir el mes del límite a eliminar
+    # ----------------------------------------------------------
+    is_awaiting_limit_month = await ConversationService.is_awaiting_limit_month_selection(sender_phone)
+
+    if is_awaiting_limit_month:
+        pending_delete = await ConversationService.get_pending_limit_delete(sender_phone)
+        if pending_delete is None:
+            await ConversationService.clear_state(sender_phone)
+            reply_text = "Se perdió el contexto de la eliminación. Volvé a indicarme qué límite querés eliminar."
+        else:
+            extracted_data = await LLMService.process_message(text_body)
+            month = extracted_data.get("limit_month")
+            if month is None:
+                month = _extract_month_from_text(text_body)
+            if month is None:
+                reply_text = _limit_selection_reply(
+                    pending_delete.category_name,
+                    pending_delete.candidates,
+                )
+            else:
+                result = LimitService.delete_limit(
+                    sender_phone,
+                    pending_delete.category_name,
+                    month=month,
+                    year=extracted_data.get("limit_year"),
+                )
+                await ConversationService.clear_state(sender_phone)
+                reply_text = _limit_delete_reply(result, pending_delete.category_name)
+        return DispatchResult(reply_text=reply_text, service_invoked="conversation")
+
     # Procesar mensaje con LLM
     extracted_data = await LLMService.process_message(text_body)
     intent = extracted_data.get("intent", "out_of_scope")
@@ -657,7 +1179,23 @@ async def process_incoming_message(
     # ----------------------------------------------------------
     # STK-39 v2: Manejar intents
     # ----------------------------------------------------------
-    if intent == "change_category":
+    if intent == "create_limit":
+        reply_text = await _handle_create_limit(sender_phone, extracted_data)
+        service_invoked = "limit"
+
+    elif intent == "change_limit":
+        reply_text = await _handle_change_limit(sender_phone, extracted_data)
+        service_invoked = "limit"
+
+    elif intent == "list_limits":
+        reply_text = await _handle_list_limits(sender_phone)
+        service_invoked = "limit"
+
+    elif intent == "delete_limit":
+        reply_text = await _handle_delete_limit(sender_phone, extracted_data)
+        service_invoked = "limit"
+
+    elif intent == "change_category":
         reply_text = await _handle_change_category(sender_phone, extracted_data)
         service_invoked = "finance"
 
@@ -847,7 +1385,7 @@ async def process_incoming_message(
                     f"message_id={whatsapp_message_id}",
                     f"status={registration_result.status}",
                 )
-                reply_text = _registration_reply(registration_result, extracted_data)
+                reply_text = _registration_dispatch_reply(registration_result, extracted_data)
                 service_invoked = "finance"
         elif intent in ("confirm_category", "reject_category"):
             # Estos intents no deberían llegar acá sin pending, pero por si acaso

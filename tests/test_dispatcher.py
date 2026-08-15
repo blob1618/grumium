@@ -254,11 +254,11 @@ class TestFinancialMovement:
         assert result.raw_llm_response["intent"] == "expense"
 
     @pytest.mark.asyncio
-    async def test_duplicate_movement_not_reregistered(self):
+    async def test_duplicate_movement_suppresses_reply(self):
         with common_patches(register=duplicate_result()):
             result = await process_incoming_message("12345", "Gasté 5000 en supermercado", "wamid.1")
 
-        assert "duplicado" in result.reply_text.lower() or "ya había" in result.reply_text.lower()
+        assert result.reply_text == ""
 
 
 # ---------------------------------------------------------------------------

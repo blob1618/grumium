@@ -188,7 +188,7 @@ def test_handle_webhook_registered_income_movement_confirms_income():
     assert "$250000 ARS" in sent_text
 
 
-def test_handle_webhook_duplicate_movement():
+def test_handle_webhook_duplicate_movement_is_silent():
     response, _, register_movement, send_message = post_webhook_with_mocks(
         llm_result=movement_llm_result(),
         finance_result=registration_result("duplicate"),
@@ -196,10 +196,7 @@ def test_handle_webhook_duplicate_movement():
 
     assert response.status_code == 200
     register_movement.assert_called_once()
-    send_message.assert_awaited_once_with(
-        "12345",
-        "Este movimiento ya había sido registrado, no lo dupliqué.",
-    )
+    send_message.assert_not_awaited()
 
 
 def test_handle_webhook_user_not_found():

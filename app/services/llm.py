@@ -126,6 +126,8 @@ class LLMService:
                 "confirm_category", "reject_category",
                 "delete_category", "list_categories",
                 "change_category",
+                "create_limit", "change_limit", "list_limits",
+                "delete_limit", "confirm_limit", "reject_limit",
             }
             if intent not in allowed_intents:
                 intent = "out_of_scope"
@@ -165,6 +167,30 @@ class LLMService:
             if reminder_id is not None:
                 reminder_id = str(reminder_id).strip() or None
 
+            limit_category = parsed.get("limit_category")
+            if limit_category is not None:
+                limit_category = str(limit_category).strip() or None
+
+            limit_amount = parsed.get("limit_amount")
+            try:
+                limit_amount = float(limit_amount) if limit_amount is not None else None
+            except (TypeError, ValueError):
+                limit_amount = None
+
+            limit_month = parsed.get("limit_month")
+            try:
+                limit_month = int(limit_month) if limit_month is not None else None
+            except (TypeError, ValueError):
+                limit_month = None
+            if limit_month is not None and not (1 <= limit_month <= 12):
+                limit_month = None
+
+            limit_year = parsed.get("limit_year")
+            try:
+                limit_year = int(limit_year) if limit_year is not None else None
+            except (TypeError, ValueError):
+                limit_year = None
+
             return {
                 "intent": intent,
                 "expense": parsed.get("expense"),
@@ -180,6 +206,10 @@ class LLMService:
                 "reminder_amount": reminder_amount,
                 "reminder_currency": reminder_currency,
                 "reminder_id": reminder_id,
+                "limit_category": limit_category,
+                "limit_amount": limit_amount,
+                "limit_month": limit_month,
+                "limit_year": limit_year,
                 "reply_text": str(parsed.get("reply_text") or ""),
             }
 
@@ -200,6 +230,10 @@ class LLMService:
                 "reminder_amount": None,
                 "reminder_currency": None,
                 "reminder_id": None,
+                "limit_category": None,
+                "limit_amount": None,
+                "limit_month": None,
+                "limit_year": None,
                 "reply_text": (
                     "No he podido analizar tu mensaje en este momento. "
                     "Si deseas, puedes reenviarlo en unos instantes."
