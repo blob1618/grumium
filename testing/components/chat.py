@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import streamlit as st
@@ -38,6 +39,15 @@ def export_as_text(messages: list[dict]) -> str:
         role_label = "Usuario" if msg["role"] == "user" else "Luka"
         lines.append(f"{role_label}: {msg['content']}")
     return "\n".join(lines)
+
+
+_WHATSAPP_BOLD = re.compile(r"\*([^*\n]+)\*")
+
+
+def whatsapp_to_markdown(text: str) -> str:
+    """Convierte formato WhatsApp (`\\n`, `*negrita*`) a Markdown de Streamlit."""
+    with_hard_breaks = text.replace("\n", "  \n")
+    return _WHATSAPP_BOLD.sub(r"**\1**", with_hard_breaks)
 
 
 def _get_prompt_path(config: TestingConfig) -> str:
