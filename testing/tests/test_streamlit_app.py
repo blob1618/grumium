@@ -111,3 +111,10 @@ class TestStreamlitAppEntrypoint:
         assert "DATABASE_URL" not in os.environ
         mock_user_sim.create_test_user.assert_called_once()
         mock_chat.assert_called_once()
+
+    def test_import_restores_existing_database_url(self, monkeypatch):
+        monkeypatch.setenv("DATABASE_URL", "postgresql://prod/db")
+        _, _, mock_chat, mock_user_sim, _ = _import_app()
+
+        assert os.environ["DATABASE_URL"] == "postgresql://prod/db"
+        mock_user_sim.create_test_user.assert_called_once()
