@@ -95,7 +95,7 @@ def render_chat(config: TestingConfig) -> None:
     for msg in st.session_state.messages:
         if msg["role"] == "assistant":
             with st.chat_message("assistant", avatar=bot_avatar()):
-                st.write(msg["content"])
+                render_assistant_text(msg["content"])
                 if msg.get("debug"):
                     flags = {
                         "json": config.debug_json,
@@ -130,7 +130,7 @@ def render_chat(config: TestingConfig) -> None:
             if raw.get("error"):
                 st.error(reply_text or "Error del LLM")
             else:
-                st.write(reply_text or "Sin respuesta")
+                render_assistant_text(reply_text or "Sin respuesta")
 
             flags = {
                 "json": config.debug_json,

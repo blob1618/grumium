@@ -401,3 +401,66 @@ class TestRenderChat:
             render_chat(TestingConfig())
 
         st.error.assert_called_once()
+
+    def test_render_chat_assistant_history_uses_markdown_renderer(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        chat_st.session_state.messages = [
+            {"role": "assistant", "content": "l1\nl2", "debug": {}},
+        ]
+        chat_st.chat_input.return_value = None
+
+        chat_msg = MagicMock()
+        chat_msg.__enter__ = MagicMock(return_value=None)
+        chat_msg.__exit__ = MagicMock(return_value=False)
+        chat_st.chat_message.return_value = chat_msg
+
+        render_chat(TestingConfig())
+
+        chat_st.markdown.assert_called_once_with("l1  \nl2")
+        chat_st.write.assert_not_called()
+
+    def test_render_chat_new_assistant_reply_uses_markdown_renderer(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        chat_st.session_state.messages = []
+        chat_st.chat_input.return_value = "hola"
+        chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
+        chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
+        chat_st.spinner.return_value.__enter__ = MagicMock(return_value=None)
+        chat_st.spinner.return_value.__exit__ = MagicMock(return_value=False)
+        chat_st.sidebar.__enter__ = MagicMock(return_value=None)
+        chat_st.sidebar.__exit__ = MagicMock(return_value=False)
+        chat_st.download_button.return_value = None
+
+        with (
+            patch(
+                "testing.components.chat._process_message",
+                new_callable=AsyncMock,
+                return_value=("l1\nl2", {"latency_ms": 1.0}),
+            ),
+        ):
+            render_chat(TestingConfig())
+
+        chat_st.markdown.assert_called_once_with("l1  \nl2")
+
+    def test_render_chat_user_message_still_uses_write(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        chat_st.session_state.messages = [
+            {"role": "user", "content": "hola", "debug": {}},
+        ]
+        chat_st.chat_input.return_value = None
+
+        chat_msg = MagicMock()
+        chat_msg.__enter__ = MagicMock(return_value=None)
+        chat_msg.__exit__ = MagicMock(return_value=False)
+        chat_st.chat_message.return_value = chat_msg
+
+        render_chat(TestingConfig())
+
+        chat_st.write.assert_called_once_with("hola")
+        chat_st.markdown.assert_not_called()
