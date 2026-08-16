@@ -50,6 +50,11 @@ def whatsapp_to_markdown(text: str) -> str:
     return _WHATSAPP_BOLD.sub(r"**\1**", with_hard_breaks)
 
 
+def render_assistant_text(text: str) -> None:
+    """Renderiza el texto del asistente respetando saltos de línea y negrita."""
+    st.markdown(whatsapp_to_markdown(text))
+
+
 def _get_prompt_path(config: TestingConfig) -> str:
     """Resolve prompt path from config."""
     if config.prompt_path == "prompt.md":

@@ -1,5 +1,7 @@
 """Tests for WhatsApp-to-Markdown rendering helpers in the chat component."""
 
+from unittest.mock import patch
+
 from testing.components.chat import whatsapp_to_markdown
 
 
@@ -24,3 +26,23 @@ class TestWhatsappToMarkdown:
 
     def test_empty_string(self):
         assert whatsapp_to_markdown("") == ""
+
+
+class TestRenderAssistantText:
+    def test_renders_markdown_with_transformed_text(self):
+        with patch("testing.components.chat.st") as chat_st:
+            from testing.components.chat import render_assistant_text
+
+            render_assistant_text("📌 *Tus categorías:*\n• comida")
+
+        chat_st.markdown.assert_called_once_with(
+            "📌 **Tus categorías:**  \n• comida"
+        )
+
+    def test_renders_fallback_text_when_empty(self):
+        with patch("testing.components.chat.st") as chat_st:
+            from testing.components.chat import render_assistant_text
+
+            render_assistant_text("")
+
+        chat_st.markdown.assert_called_once_with("")
