@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from app.services.llm_contract import RETRY_FORMAT_INSTRUCTION, normalize_llm_response
 from app.services.llm_providers import LLMProvider, create_provider
 
 
@@ -113,6 +114,15 @@ class LLMService:
                 user_message=text,
                 temperature=0.1,
             )
+            try:
+                parsed = normalize_llm_response(parsed)
+            except ValueError:
+                parsed = await provider.generate_json(
+                    system_prompt=system_prompt + RETRY_FORMAT_INSTRUCTION,
+                    user_message=text,
+                    temperature=0.1,
+                )
+                parsed = normalize_llm_response(parsed)
 
             # Normalizar y validar la respuesta
             intent = str(parsed.get("intent", "out_of_scope")).strip().lower()
@@ -236,7 +246,7 @@ class LLMService:
                 "limit_year": None,
                 "reply_text": (
                     "No he podido analizar tu mensaje en este momento. "
-                    "Si deseas, puedes reenviarlo en unos instantes."
+                    "¿Podés reformularlo e intentar de nuevo?"
                 ),
                 "error": f"{type(exc).__name__}: {exc}",
             }

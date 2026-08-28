@@ -343,6 +343,48 @@ async def test_process_message_fallback_on_exception():
 
 
 @pytest.mark.asyncio
+async def test_list_response_no_crash_and_asks_reformulate():
+    """STK-158: respuesta lista no crashea; pide reformular sin perder el mensaje."""
+    mock_response = [{"intent": "expense", "amount": 50000}]
+    result = await _process_message_with_mock_response(mock_response)
+    assert result["intent"] == "out_of_scope"
+    assert "reformular" in result["reply_text"].lower() or "no he podido" in result["reply_text"].lower()
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_list_response_retry_recovers_object():
+    """STK-158: primer intento lista, retry devuelve dict -> se procesa normal."""
+    calls = {"n": 0}
+
+    async def fake_generate_json(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [{"intent": "expense"}]
+        return {"intent": "greeting", "reply_text": "hola"}
+
+    with patch.object(LLMService, "_get_provider") as gp:
+        provider = AsyncMock()
+        provider.generate_json.side_effect = fake_generate_json
+        gp.return_value = provider
+        result = await LLMService.process_message("hola")
+
+    assert calls["n"] == 2
+    assert result["intent"] == "greeting"
+    # El retry debe pedir explícitamente objeto, no lista
+    retried_prompt = provider.generate_json.await_args_list[1].kwargs.get(
+        "system_prompt") or provider.generate_json.await_args_list[1].args[0]
+    assert "no con una lista" in retried_prompt
+
+
+@pytest.mark.asyncio
+async def test_none_response_falls_back_without_crash():
+    result = await _process_message_with_mock_response(None)
+    assert result["intent"] == "out_of_scope"
+    assert "error" in result
+
+
+@pytest.mark.asyncio
 async def test_reply_text_none_se_normaliza_a_vacio():
     """Prueba: reply_text=null del LLM se normaliza a string vacío (nunca "None")."""
     mock_response = {
