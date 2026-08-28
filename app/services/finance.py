@@ -1,5 +1,6 @@
 import io
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -130,6 +131,7 @@ class FinanceService:
         whatsapp_message_id: str | None,
         original_text: str,
         llm_result: dict,
+        fecha_movimiento: date | None = None,
     ) -> MovementRegistrationResult:
         sender_phone = cls._normalize_optional_text(sender_phone)
         if not sender_phone:
@@ -197,6 +199,8 @@ class FinanceService:
                 origen="whatsapp_text",
                 whatsapp_message_id=whatsapp_message_id,
             )
+            if fecha_movimiento is not None:
+                movement.fecha_movimiento = fecha_movimiento
 
             session.add(movement)
             session.commit()
@@ -532,6 +536,7 @@ class FinanceService:
         description: str,
         category_name: str | None = None,
         create_category_if_missing: bool = False,
+        fecha_movimiento: date | None = None,
     ) -> MovementRegistrationResult:
         """
         Registra un movimiento financiero con una categoría específica.
@@ -609,6 +614,8 @@ class FinanceService:
                 origen="whatsapp_text",
                 whatsapp_message_id=whatsapp_message_id,
             )
+            if fecha_movimiento is not None:
+                movement.fecha_movimiento = fecha_movimiento
 
             session.add(movement)
             session.commit()

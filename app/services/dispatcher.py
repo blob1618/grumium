@@ -7,6 +7,7 @@ environment can invoke the same logic.
 
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.sql import func
@@ -24,6 +25,7 @@ from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkServ
 from app.services.finance import FinanceService, MovementRegistrationResult
 from app.services.limit import LimitService
 from app.services.llm import LLMService
+from app.services.llm_contract import resolve_relative_date
 from app.services.onboarding import OnboardingDecision, OnboardingService
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService
 
@@ -531,6 +533,7 @@ async def _register_single_with_hint(
         description=_movement_description(llm_result),
         category_name=category_name,
         create_category_if_missing=True,
+        fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
     )
 
     print(
@@ -581,6 +584,7 @@ async def _register_multiop(
             whatsapp_message_id=whatsapp_message_id,
             original_text=text_body,
             llm_result=llm_result,
+        fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
         )
         print(
             "[MOVEMENT_REGISTRATION]",
@@ -1233,7 +1237,9 @@ async def process_incoming_message(
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
     # Procesar mensaje con LLM
-    extracted_data = await LLMService.process_message(text_body)
+    extracted_data = await LLMService.process_message(
+        text_body, context=f"FECHA ACTUAL: {date.today().isoformat()}."  # noqa: DTZ011
+    )
     intent = extracted_data.get("intent", "out_of_scope")
 
     # ----------------------------------------------------------
