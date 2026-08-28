@@ -92,6 +92,26 @@ class LLMService:
 
         return None
 
+    @staticmethod
+    def _normalize_amount(raw: Any) -> float | None:
+        try:
+            return float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _normalize_single(cls, m: Dict[str, Any], base: Dict[str, Any]) -> Dict[str, Any]:
+        intent = str(m.get("intent") or base.get("intent") or "expense").strip().lower()
+        return {
+            "intent": intent,
+            "movement_type": cls._normalize_movement_type(m, intent),
+            "amount": cls._normalize_amount(m.get("amount")),
+            "currency": str(m.get("currency") or "ARS").upper(),
+            "category": m.get("category"),
+            "description": m.get("description") or m.get("expense"),
+            "reply_text": str(m.get("reply_text") or ""),
+        }
+
 
     @classmethod
     async def process_message(cls, text: str) -> Dict[str, Any]:
@@ -142,11 +162,7 @@ class LLMService:
             if intent not in allowed_intents:
                 intent = "out_of_scope"
 
-            amount = parsed.get("amount")
-            try:
-                amount = float(amount) if amount is not None else None
-            except (TypeError, ValueError):
-                amount = None
+            amount = cls._normalize_amount(parsed.get("amount"))
 
             movement_type = cls._normalize_movement_type(parsed, intent)
 
@@ -201,6 +217,15 @@ class LLMService:
             except (TypeError, ValueError):
                 limit_year = None
 
+            raw_movements = parsed.get("movements")
+            if isinstance(raw_movements, list) and raw_movements:
+                movements = [cls._normalize_single(m, base=parsed) for m in raw_movements]
+            elif intent == "expense":
+                single = {k: v for k, v in parsed.items() if k != "movements"}
+                movements = [cls._normalize_single(single, base=parsed)]
+            else:
+                movements = []
+
             return {
                 "intent": intent,
                 "expense": parsed.get("expense"),
@@ -221,6 +246,7 @@ class LLMService:
                 "limit_month": limit_month,
                 "limit_year": limit_year,
                 "reply_text": str(parsed.get("reply_text") or ""),
+                "movements": movements,
             }
 
         except Exception as exc:
@@ -248,6 +274,7 @@ class LLMService:
                     "No he podido analizar tu mensaje en este momento. "
                     "¿Podés reformularlo e intentar de nuevo?"
                 ),
+                "movements": [],
                 "error": f"{type(exc).__name__}: {exc}",
             }
 

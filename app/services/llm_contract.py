@@ -1,5 +1,20 @@
 from typing import Any, Dict
 
+from pydantic import BaseModel, Field
+
+
+class MovementContract(BaseModel):
+    model_config = {"extra": "ignore"}
+    intent: str | None = None
+    movement_type: str | None = None
+    amount: float | None = None
+    currency: str | None = None
+    category: str | None = None
+    description: str | None = None
+    expense: str | None = None
+    reply_text: str | None = None
+
+
 RETRY_FORMAT_INSTRUCTION = (
     "\n\nIMPORTANTE: Respondé ÚNICAMENTE con un objeto JSON válido, "
     "no con una lista ni texto adicional."
