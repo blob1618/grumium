@@ -1,5 +1,5 @@
 from datetime import date, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -8,9 +8,11 @@ from sqlalchemy.pool import StaticPool
 
 import app.services.finance as finance_module
 from app.models.database import Base, MovimientoFinanciero, Usuario
-from app.services.dispatcher import _register_multiop
+from app.services.dispatcher import _register_multiop, process_incoming_message
+from app.services.finance import MovementRegistrationResult
 from app.services.llm import LLMService
 from app.services.llm_contract import resolve_relative_date
+from app.services.onboarding import OnboardingDecision, OnboardingResult
 
 
 @pytest.fixture()
@@ -118,3 +120,55 @@ async def test_gaste_100_ayer_persists_yesterday(db_context):
     movement = session.query(MovimientoFinanciero).first()
     assert movement is not None
     assert movement.fecha_movimiento == date.today() - timedelta(days=1)  # noqa: DTZ011
+
+
+@pytest.mark.asyncio
+async def test_single_expense_direct_path_passes_ayer():
+    llm_result = {
+        "intent": "expense",
+        "movement_type": "egreso",
+        "amount": 100,
+        "currency": "ARS",
+        "description": "gasté 100 ayer",
+        "fecha": "ayer",
+        "category": None,
+        "reply_text": "",
+    }
+
+    spy = MagicMock()
+    spy.return_value = MovementRegistrationResult(
+        status="registered", message="ok", movement_id="m1",
+        user_id="u1", duplicate=False,
+    )
+
+    with (
+        patch(
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+            return_value=OnboardingResult(OnboardingDecision.KNOWN_USER),
+        ),
+        patch(
+            "app.services.dispatcher.LLMService.process_message",
+            new_callable=AsyncMock,
+            return_value=llm_result,
+        ),
+        patch(
+            "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
+            spy,
+        ),
+        patch(
+            "app.services.dispatcher.ConversationService.is_awaiting_rename",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch("app.services.dispatcher._update_ultimo_mensaje"),
+    ):
+        await process_incoming_message("5491111111111", "gasté 100 ayer", "w1")
+
+    assert spy.called
+    captured = spy.call_args.kwargs
+    assert captured["fecha_movimiento"] == date.today() - timedelta(days=1)  # noqa: DTZ011

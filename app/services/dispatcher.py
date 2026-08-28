@@ -584,7 +584,7 @@ async def _register_multiop(
             whatsapp_message_id=whatsapp_message_id,
             original_text=text_body,
             llm_result=llm_result,
-        fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
+            fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
         )
         print(
             "[MOVEMENT_REGISTRATION]",
@@ -1444,6 +1444,9 @@ async def process_incoming_message(
                     whatsapp_message_id=whatsapp_message_id,
                     original_text=text_body,
                     llm_result=extracted_data,
+                    fecha_movimiento=resolve_relative_date(
+                        extracted_data.get("fecha"), date.today()  # noqa: DTZ011
+                    ),
                 )
                 print(
                     "[MOVEMENT_REGISTRATION]",
