@@ -260,6 +260,54 @@ class TestFinancialMovement:
 
         assert result.reply_text == ""
 
+    @pytest.mark.asyncio
+    async def test_multiop_registers_two_movements(self):
+        from unittest.mock import MagicMock, patch
+
+        multiop_llm = movement_llm_result(
+            movements=[
+                {"movement_type": "ingreso", "amount": 50000.0, "currency": "ARS",
+                 "description": "sueldo", "reply_text": ""},
+                {"movement_type": "egreso", "amount": 10000.0, "currency": "ARS",
+                 "description": "comida", "reply_text": ""},
+            ]
+        )
+        register_mock = MagicMock(return_value=registered_result())
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value=multiop_llm,
+            ),
+            patch(
+                "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
+                register_mock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_movement",
+                new_callable=AsyncMock,
+            ),
+            patch("app.services.dispatcher._update_ultimo_mensaje"),
+        ):
+            result = await process_incoming_message("12345", "sueldo 50k y comida 10k", "wamid.1")
+
+        assert register_mock.call_count == 2
+        assert result.service_invoked == "finance"
+
 
 # ---------------------------------------------------------------------------
 # Greeting / out_of_scope

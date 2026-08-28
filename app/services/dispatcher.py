@@ -139,6 +139,31 @@ def _registration_dispatch_reply(
     return _registration_reply(result, extracted_data)
 
 
+def _multiop_registration_reply(
+    results: list[MovementRegistrationResult],
+    extracted_data: dict,
+) -> str:
+    """Resume el registro de uno o varios movimientos por mensaje."""
+    registered = sum(1 for r in results if r.status == "registered")
+    total = len(results)
+
+    if registered == total:
+        if total == 1:
+            return _registered_reply(extracted_data)
+        return f"✅ Registré los {total} movimientos."
+
+    if registered == 0:
+        return (
+            "No pude registrar ningún movimiento porque me faltan datos. "
+            "¿Podés reenviarlos con monto, descripción y si es ingreso o egreso?"
+        )
+
+    return (
+        f"✅ Registré {registered} de {total} movimientos. "
+        "Algunos faltan datos (monto, descripción o tipo). ¿Los reenvías?"
+    )
+
+
 def _safe_non_stk35_reply(extracted_data: dict) -> str:
     intent = extracted_data.get("intent")
     reply_text = extracted_data.get("reply_text") or ""
@@ -472,30 +497,41 @@ async def _register_and_reply_with_hint(
     """
     Registra el movimiento inmediatamente con la categoría inferida,
     guarda el último movimiento en Redis y devuelve el mensaje con hint.
+    Soporta varios movimientos por mensaje (multiop).
     """
-    category_name = extracted_data.get("category")
+    movements = extracted_data.get("movements") or [extracted_data]
 
-    if category_name:
-        # Registrar con la categoría inferida (creándola si no existe)
-        result = FinanceService.register_movement_with_category(
-            sender_phone=sender_phone,
-            whatsapp_message_id=whatsapp_message_id,
-            original_text=text_body,
-            movement_type=extracted_data.get("movement_type", "egreso"),
-            amount=Decimal(str(extracted_data.get("amount") or 0)),
-            currency=extracted_data.get("currency", "ARS"),
-            description=_movement_description(extracted_data),
-            category_name=category_name,
-            create_category_if_missing=True,
+    # Confirmación de categoría SOLO con exactamente 1 movimiento con categoría inferida.
+    if len(movements) == 1 and movements[0].get("category"):
+        return await _register_single_with_hint(
+            sender_phone, whatsapp_message_id, text_body, extracted_data, movements[0]
         )
-    else:
-        # Sin categoría inferida, registrar directamente
-        result = FinanceService.register_movement_from_whatsapp_text(
-            sender_phone=sender_phone,
-            whatsapp_message_id=whatsapp_message_id,
-            original_text=text_body,
-            llm_result=extracted_data,
-        )
+
+    return await _register_multiop(
+        sender_phone, whatsapp_message_id, text_body, extracted_data, movements
+    )
+
+
+async def _register_single_with_hint(
+    sender_phone: str,
+    whatsapp_message_id: str | None,
+    text_body: str,
+    extracted_data: dict,
+    mov: dict,
+) -> str:
+    category_name = mov.get("category")
+    llm_result = {**extracted_data, **mov}
+    result = FinanceService.register_movement_with_category(
+        sender_phone=sender_phone,
+        whatsapp_message_id=whatsapp_message_id,
+        original_text=text_body,
+        movement_type=llm_result.get("movement_type", "egreso"),
+        amount=Decimal(str(llm_result.get("amount") or 0)),
+        currency=llm_result.get("currency", "ARS"),
+        description=_movement_description(llm_result),
+        category_name=category_name,
+        create_category_if_missing=True,
+    )
 
     print(
         "[MOVEMENT_REGISTRATION]",
@@ -504,32 +540,56 @@ async def _register_and_reply_with_hint(
         f"status={result.status}",
     )
 
-    if result.status == "registered":
-        # Guardar el último movimiento en Redis para posible cambio de categoría
-        last = LastRegisteredMovement(
-            movement_id=result.movement_id,
+    if result.status != "registered":
+        return _registration_dispatch_reply(result, llm_result)
+
+    # Guardar el último movimiento en Redis para posible cambio de categoría
+    last = LastRegisteredMovement(
+        movement_id=result.movement_id,
+        sender_phone=sender_phone,
+        movement_type=llm_result.get("movement_type", "egreso"),
+        amount=Decimal(str(llm_result.get("amount") or 0)),
+        currency=llm_result.get("currency", "ARS"),
+        description=_movement_description(llm_result),
+        category_name=category_name,
+    )
+    await ConversationService.set_last_movement(sender_phone, last)
+
+    movement_type = llm_result.get("movement_type") or "movimiento"
+    description = _movement_description(llm_result)
+    amount = _format_amount(llm_result.get("amount"))
+    currency = str(llm_result.get("currency") or "ARS").upper()
+
+    reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
+    reply += f"\n📁 Categoría: {category_name}."
+    reply += f"\n{_category_hint_reply()}"
+    return reply
+
+
+async def _register_multiop(
+    sender_phone: str,
+    whatsapp_message_id: str | None,
+    text_body: str,
+    extracted_data: dict,
+    movements: list,
+) -> str:
+    results = []
+    for mov in movements:
+        llm_result = {**extracted_data, **mov}
+        result = FinanceService.register_movement_from_whatsapp_text(
             sender_phone=sender_phone,
-            movement_type=extracted_data.get("movement_type", "egreso"),
-            amount=Decimal(str(extracted_data.get("amount") or 0)),
-            currency=extracted_data.get("currency", "ARS"),
-            description=_movement_description(extracted_data),
-            category_name=category_name,
+            whatsapp_message_id=whatsapp_message_id,
+            original_text=text_body,
+            llm_result=llm_result,
         )
-        await ConversationService.set_last_movement(sender_phone, last)
-
-        # Armar respuesta con categoría y hint
-        movement_type = extracted_data.get("movement_type") or "movimiento"
-        description = _movement_description(extracted_data)
-        amount = _format_amount(extracted_data.get("amount"))
-        currency = str(extracted_data.get("currency") or "ARS").upper()
-
-        reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
-        if category_name:
-            reply += f"\n📁 Categoría: {category_name}."
-        reply += f"\n{_category_hint_reply()}"
-        return reply
-
-    return _registration_dispatch_reply(result, extracted_data)
+        print(
+            "[MOVEMENT_REGISTRATION]",
+            f"user={sender_phone}",
+            f"message_id={whatsapp_message_id}",
+            f"status={result.status}",
+        )
+        results.append(result)
+    return _multiop_registration_reply(results, extracted_data)
 
 
 # ---------------------------------------------------------------------------
