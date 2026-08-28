@@ -40,3 +40,33 @@ def resolve_category(name: str | None, user_category_names: set[str] | None = No
             return name
 
     return None
+
+
+def resolve_category_for_user(
+    name: str | None, user_category_names: set[str] | None = None
+) -> str | None:
+    """Resuelve `name` a un nombre de categoría *adjuntable* al usuario.
+
+    Si la taxonomía resuelve a un canónico C y el usuario tiene una categoría que
+    también resuelve a C (sinónimo del mismo canónico, o igual a C), devuelve el
+    nombre real de esa categoría del usuario para que el movimiento se adhiera a ella.
+    Si no hay tal categoría, devuelve el canónico C (o el match exacto del usuario).
+    Si nada coincide, devuelve ``None``.
+    """
+    normalized = _normalize(name)
+    if not normalized:
+        return None
+
+    canonical = _SYNONYM_TO_CANONICAL.get(normalized)
+    if canonical:
+        for raw in user_category_names or set():
+            if _SYNONYM_TO_CANONICAL.get(_normalize(raw)) == canonical:
+                return raw
+        return canonical
+
+    for raw in user_category_names or set():
+        if _normalize(raw) == normalized:
+            return raw
+
+    return None
+

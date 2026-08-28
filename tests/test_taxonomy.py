@@ -1,4 +1,4 @@
-from app.services.categories_taxonomy import resolve_category
+from app.services.categories_taxonomy import resolve_category, resolve_category_for_user
 
 
 def test_resolve_synonym_to_canonical():
@@ -30,3 +30,25 @@ def test_accent_and_case_insensitivity():
     assert resolve_category("Expensas") == "Vivienda"
     assert resolve_category("ócio") == "Ocio"
     assert resolve_category("  SUELDO ") == "Ingresos"
+
+
+def test_resolve_for_user_prefers_user_synonym_over_canonical():
+    # LLM manda "luz" -> canónico "Servicios"; el usuario tiene "Luz" (sinónimo del mismo canónico)
+    assert resolve_category_for_user("luz", {"Luz", "Comida"}) == "Luz"
+    assert resolve_category_for_user("LUZ", {"luz"}) == "luz"
+
+
+def test_resolve_for_user_returns_canonical_when_no_user_synonym():
+    assert resolve_category_for_user("luz", set()) == "Servicios"
+    assert resolve_category_for_user("luz", {"Otra"}) == "Servicios"
+
+
+def test_resolve_for_user_exact_custom_match_not_in_taxonomy():
+    assert resolve_category_for_user("Viáticos", {"viáticos"}) == "viáticos"
+
+
+def test_resolve_for_user_unknown_returns_none():
+    assert resolve_category_for_user("cryptomoneda", set()) is None
+    assert resolve_category_for_user("cryptomoneda", {"Comida"}) is None
+    assert resolve_category_for_user(None, {"Comida"}) is None
+

@@ -9,7 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from app.models.database import Categoria, MovimientoFinanciero, SessionLocal, Usuario
-from app.services.categories_taxonomy import resolve_category
+from app.services.categories_taxonomy import resolve_category_for_user
 
 
 @dataclass
@@ -203,7 +203,7 @@ class FinanceService:
                 )
 
             if category_name:
-                resolved = resolve_category(
+                resolved = resolve_category_for_user(
                     category_name, cls._active_user_category_names(session, user.id)
                 )
                 if resolved is None:
@@ -606,18 +606,18 @@ class FinanceService:
 
             # Resolver categoría contra la taxonomía cerrada / categorías del usuario
             if category_name:
-                resolved = resolve_category(
+                resolved = resolve_category_for_user(
                     category_name, cls._active_user_category_names(session, user.id)
                 )
-                if resolved is not None:
-                    category_name = resolved
-                elif create_category_if_missing:
+                if resolved is None and create_category_if_missing:
                     return cls._result(
                         "needs_category_confirmation",
                         "La categoría no coincide con tu taxonomía ni tus categorías.",
                         user_id=user_id,
                         category_name=category_name,
                     )
+                if resolved is not None:
+                    category_name = resolved
 
             # Resolver categoría
             categoria_id = None

@@ -133,6 +133,41 @@ def test_register_movement_without_matching_category_saves_null_category(db_cont
     assert movement.categoria_id is None
 
 
+def test_register_movement_synonym_attaches_user_category(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    luz_cat = create_category(session, user.id, nombre="Luz")
+
+    result = FinanceService.register_movement_from_whatsapp_text(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.luz",
+        original_text="Pagué la luz 3000",
+        llm_result=movement_payload(category="luz"),
+    )
+
+    movement = session.query(MovimientoFinanciero).one()
+
+    assert result.status == "registered"
+    assert movement.categoria_id == luz_cat.id
+
+
+def test_register_movement_synonym_no_user_category_saves_null(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+
+    result = FinanceService.register_movement_from_whatsapp_text(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.luznone",
+        original_text="Pagué la luz 3000",
+        llm_result=movement_payload(category="luz"),
+    )
+
+    movement = session.query(MovimientoFinanciero).one()
+
+    assert result.status == "registered"
+    assert movement.categoria_id is None
+
+
 def test_register_movement_unknown_category_needs_confirmation(db_context):
     session = db_context["session"]
     user = create_user(session)
