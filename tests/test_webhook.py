@@ -143,13 +143,14 @@ def test_handle_webhook_registered_movement_confirms_after_persistence():
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-    process_message.assert_awaited_once_with("Gaste 5000 en supermercado")
-    register_movement.assert_called_once_with(
-        sender_phone="12345",
-        whatsapp_message_id="wamid.HBgL",
-        original_text="Gaste 5000 en supermercado",
-        llm_result=llm_result,
-    )
+    process_message.assert_awaited_once()
+    assert process_message.await_args.args[0] == "Gaste 5000 en supermercado"
+    register_movement.assert_called_once()
+    reg_kwargs = register_movement.call_args.kwargs
+    assert reg_kwargs["sender_phone"] == "12345"
+    assert reg_kwargs["whatsapp_message_id"] == "wamid.HBgL"
+    assert reg_kwargs["original_text"] == "Gaste 5000 en supermercado"
+    assert reg_kwargs["llm_result"] == llm_result
     send_message.assert_awaited_once_with(
         "12345",
         "✅ Registré tu egreso: supermercado por $5000 ARS.\n¿No estás de acuerdo con la categoría? Indicame y lo cambiamos.",
@@ -561,7 +562,7 @@ class TestWebhookCreateReminder:
         }
 
         # Mock LLMService
-        async def mock_process(text):
+        async def mock_process(text, **kwargs):
             return llm_response
         monkeypatch.setattr("app.services.dispatcher.LLMService.process_message", mock_process)
         monkeypatch.setattr(
@@ -601,7 +602,7 @@ class TestWebhookCreateReminder:
             "reply_text": "Hola.",
         }
 
-        async def mock_process(text):
+        async def mock_process(text, **kwargs):
             return llm_response
         monkeypatch.setattr("app.services.dispatcher.LLMService.process_message", mock_process)
         monkeypatch.setattr(

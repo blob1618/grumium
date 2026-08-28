@@ -153,7 +153,7 @@ def test_register_movement_synonym_attaches_user_category(db_context):
 
 def test_register_movement_synonym_no_user_category_saves_null(db_context):
     session = db_context["session"]
-    user = create_user(session)
+    create_user(session)
 
     result = FinanceService.register_movement_from_whatsapp_text(
         sender_phone="5491111111111",

@@ -154,10 +154,12 @@ def _multiop_registration_reply(
     if registered == total:
         if total == 1:
             single = (movements or [extracted_data])[0]
-            return _registered_reply(single)
+            return f"{_registered_reply(single)}\n{_category_hint_reply()}"
         return f"✅ Registré los {total} movimientos."
 
     if registered == 0:
+        if total == 1:
+            return _registration_dispatch_reply(results[0], extracted_data)
         return (
             "No pude registrar ningún movimiento porque me faltan datos. "
             "¿Podés reenviarlos con monto, descripción y si es ingreso o egreso?"

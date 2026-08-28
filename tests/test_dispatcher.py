@@ -1904,7 +1904,7 @@ class TestUpdateUltimoMensaje:
                 pass
 
         session = FakeSession()
-        with patch("app.models.database.SessionLocal", lambda: session):
+        with patch("app.services.dispatcher.SessionLocal", lambda: session):
             _update_ultimo_mensaje("12345")
 
         assert session.committed is True
@@ -1936,7 +1936,7 @@ class TestUpdateUltimoMensaje:
                 pass
 
         session = FakeSession()
-        with patch("app.models.database.SessionLocal", lambda: session):
+        with patch("app.services.dispatcher.SessionLocal", lambda: session):
             _update_ultimo_mensaje("12345")
 
         assert session.rolled is True

@@ -179,7 +179,8 @@ def test_webhook_integration_valid_expense_creates_egreso(db_context):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-    process_message.assert_awaited_once_with("Gaste 5000 en supermercado")
+    process_message.assert_awaited_once()
+    assert process_message.await_args.args[0] == "Gaste 5000 en supermercado"
     send_message.assert_awaited_once()
     assert "egreso: supermercado" in send_message.await_args.args[1]
     assert len(saved_movements) == 1
