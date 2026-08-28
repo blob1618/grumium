@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.sql import func
 
+from app.models.database import Categoria, SessionLocal, Usuario
 from app.services.conversation import (
     ConversationService,
     LastCreatedLimit,
@@ -177,9 +178,41 @@ def _safe_non_stk35_reply(extracted_data: dict) -> str:
     return reply_text or "No pude interpretar tu mensaje. ¿Podés reformularlo?"
 
 
+def build_user_context(sender_phone: str) -> str:
+    """Contexto para el LLM: fecha actual + categorías activas del usuario.
+
+    Degrada silenciosamente (solo fecha) si la BD falla, nunca rompe el flujo.
+    """
+    date_line = f"FECHA ACTUAL: {date.today().isoformat()}."  # noqa: DTZ011
+    session = None
+    try:
+        session = SessionLocal()
+        user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+        if user is None:
+            return date_line
+        categorias = (
+            session.query(Categoria)
+            .filter(Categoria.usuario_id == user.id)
+            .filter(Categoria.esta_eliminado.is_(False))
+            .order_by(Categoria.nombre)
+            .all()
+        )
+    except Exception as exc:
+        print(f"[BUILD_USER_CONTEXT] Error: {type(exc).__name__}: {exc}")
+        return date_line
+    finally:
+        if session is not None:
+            session.close()
+
+    if not categorias:
+        return date_line
+    nombres = ", ".join(c.nombre for c in categorias)
+    return f"{date_line}\nCATEGORÍAS DISPONIBLES DEL USUARIO: {nombres}"
+
+
 def _update_ultimo_mensaje(sender_phone: str) -> None:
     """Update usuario.ultimo_mensaje_en for WhatsApp 24h window tracking."""
-    from app.models.database import SessionLocal, Usuario
+    from app.models.database import Usuario
     session = SessionLocal()
     try:
         session.query(Usuario).filter(
@@ -1064,7 +1097,9 @@ async def process_incoming_message(
             reply_text = "Se perdió el contexto. Podés volver a crear el recordatorio."
         else:
             # Extraer día del texto usando LLM
-            extracted_data = await LLMService.process_message(text_body)
+            extracted_data = await LLMService.process_message(
+                text_body, context=build_user_context(sender_phone)
+            )
             new_day = extracted_data.get("reminder_day")
             # Fallback: extraer número del texto
             if new_day is None:
@@ -1105,7 +1140,9 @@ async def process_incoming_message(
                 reply_text="Se perdió el contexto. Podés volver a crear el límite.",
                 service_invoked="conversation",
             )
-        extracted_data = await LLMService.process_message(text_body)
+        extracted_data = await LLMService.process_message(
+            text_body, context=build_user_context(sender_phone)
+        )
         intent = extracted_data.get("intent", "out_of_scope")
         if intent == "reject_limit" or _is_cancel_request(text_body):
             await ConversationService.clear_state(sender_phone)
@@ -1139,7 +1176,9 @@ async def process_incoming_message(
             await ConversationService.clear_state(sender_phone)
             reply_text = "Se perdió el contexto. Podés volver a crear el límite."
         else:
-            extracted_data = await LLMService.process_message(text_body)
+            extracted_data = await LLMService.process_message(
+                text_body, context=build_user_context(sender_phone)
+            )
             intent = extracted_data.get("intent", "out_of_scope")
 
             if intent == "reject_limit" or _is_cancel_request(text_body):
@@ -1180,7 +1219,9 @@ async def process_incoming_message(
             await ConversationService.clear_state(sender_phone)
             reply_text = "Se perdió el contexto de la eliminación. Volvé a indicarme qué límite querés eliminar."
         else:
-            extracted_data = await LLMService.process_message(text_body)
+            extracted_data = await LLMService.process_message(
+                text_body, context=build_user_context(sender_phone)
+            )
             category_name = extracted_data.get("limit_category") or _extract_category_from_text(text_body)
             if not category_name:
                 reply_text = "¿Qué límite querés eliminar? Indicame la categoría."
@@ -1216,7 +1257,9 @@ async def process_incoming_message(
             await ConversationService.clear_state(sender_phone)
             reply_text = "Se perdió el contexto de la eliminación. Volvé a indicarme qué límite querés eliminar."
         else:
-            extracted_data = await LLMService.process_message(text_body)
+            extracted_data = await LLMService.process_message(
+                text_body, context=build_user_context(sender_phone)
+            )
             month = extracted_data.get("limit_month")
             if month is None:
                 month = _extract_month_from_text(text_body)
@@ -1236,9 +1279,9 @@ async def process_incoming_message(
                 reply_text = _limit_delete_reply(result, pending_delete.category_name)
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
-    # Procesar mensaje con LLM
+    # Procesar mensaje con LLM (fecha + categorías del usuario como contexto)
     extracted_data = await LLMService.process_message(
-        text_body, context=f"FECHA ACTUAL: {date.today().isoformat()}."  # noqa: DTZ011
+        text_body, context=build_user_context(sender_phone)
     )
     intent = extracted_data.get("intent", "out_of_scope")
 
@@ -1403,7 +1446,9 @@ async def process_incoming_message(
 
     else:
         # No hay conversación pendiente, procesar normalmente
-        extracted_data = await LLMService.process_message(text_body)
+        extracted_data = await LLMService.process_message(
+            text_body, context=build_user_context(sender_phone)
+        )
         intent = extracted_data.get("intent", "out_of_scope")
 
         # ----------------------------------------------------------
