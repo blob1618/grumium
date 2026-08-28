@@ -1,8 +1,6 @@
 from datetime import date, timedelta
 from typing import Any, Dict
 
-from pydantic import BaseModel, Field
-
 _WEEKDAY_ES = {
     "lunes": 0, "martes": 1, "miercoles": 2, "miércoles": 2,
     "jueves": 3, "viernes": 4, "sabado": 5, "sábado": 5, "domingo": 6,
@@ -31,18 +29,6 @@ def resolve_relative_date(raw_fecha: str | None, today: date) -> date:
     if parsed > today + timedelta(days=1):
         return today
     return parsed
-
-
-class MovementContract(BaseModel):
-    model_config = {"extra": "ignore"}
-    intent: str | None = None
-    movement_type: str | None = None
-    amount: float | None = None
-    currency: str | None = None
-    category: str | None = None
-    description: str | None = None
-    expense: str | None = None
-    reply_text: str | None = None
 
 
 RETRY_FORMAT_INSTRUCTION = (
