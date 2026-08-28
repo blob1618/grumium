@@ -133,6 +133,24 @@ def test_register_movement_without_matching_category_saves_null_category(db_cont
     assert movement.categoria_id is None
 
 
+def test_register_movement_unknown_category_needs_confirmation(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    create_category(session, user.id, nombre="Comida")
+    create_category(session, user.id, nombre="Salud")
+
+    result = FinanceService.register_movement_from_whatsapp_text(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.crypto",
+        original_text="Gaste 5000 en cripto",
+        llm_result=movement_payload(category="cryptomoneda"),
+    )
+
+    assert result.status == "needs_category_confirmation"
+    assert result.category_name == "cryptomoneda"
+    assert count_movements(session) == 0
+
+
 def test_register_movement_deleted_category_is_not_used(db_context):
     session = db_context["session"]
     user = create_user(session)
@@ -689,6 +707,27 @@ def test_register_movement_with_category_not_found_no_create(db_context):
     assert result.status == "registered"
     movement = session.query(MovimientoFinanciero).one()
     assert movement.categoria_id is None
+
+
+def test_register_movement_with_category_unknown_needs_confirmation(db_context):
+    session = db_context["session"]
+    create_user(session)
+
+    result = FinanceService.register_movement_with_category(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.cat4",
+        original_text="Gaste 3000 en cripto",
+        movement_type="egreso",
+        amount=3000,
+        currency="ARS",
+        description="cripto",
+        category_name="criptomoneda",
+        create_category_if_missing=True,
+    )
+
+    assert result.status == "needs_category_confirmation"
+    assert result.category_name == "criptomoneda"
+    assert count_movements(session) == 0
 
 
 # ---------------------------------------------------------------------------

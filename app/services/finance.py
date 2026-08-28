@@ -9,6 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from app.models.database import Categoria, MovimientoFinanciero, SessionLocal, Usuario
+from app.services.categories_taxonomy import resolve_category
 
 
 @dataclass
@@ -18,6 +19,7 @@ class MovementRegistrationResult:
     movement_id: str | None = None
     user_id: str | None = None
     duplicate: bool = False
+    category_name: str | None = None
 
 
 @dataclass
@@ -54,6 +56,7 @@ class FinanceService:
         movement_id: str | None = None,
         user_id: str | None = None,
         duplicate: bool = False,
+        category_name: str | None = None,
     ) -> MovementRegistrationResult:
         return MovementRegistrationResult(
             status=status,
@@ -61,7 +64,18 @@ class FinanceService:
             movement_id=movement_id,
             user_id=user_id,
             duplicate=duplicate,
+            category_name=category_name,
         )
+
+    @staticmethod
+    def _active_user_category_names(session, user_id: Any) -> set[str]:
+        rows = (
+            session.query(Categoria.nombre)
+            .filter(Categoria.usuario_id == user_id)
+            .filter(Categoria.esta_eliminado.is_(False))
+            .all()
+        )
+        return {row[0] for row in rows}
 
     @staticmethod
     def _normalize_optional_text(value: Any) -> str | None:
@@ -187,6 +201,19 @@ class FinanceService:
                     user_id=str(duplicate.usuario_id),
                     duplicate=True,
                 )
+
+            if category_name:
+                resolved = resolve_category(
+                    category_name, cls._active_user_category_names(session, user.id)
+                )
+                if resolved is None:
+                    return cls._result(
+                        "needs_category_confirmation",
+                        "La categoría no coincide con tu taxonomía ni tus categorías.",
+                        user_id=user_id,
+                        category_name=category_name,
+                    )
+                category_name = resolved
 
             category = cls._find_category(session, user.id, category_name)
             movement = MovimientoFinanciero(
@@ -576,6 +603,21 @@ class FinanceService:
                     user_id=str(duplicate.usuario_id),
                     duplicate=True,
                 )
+
+            # Resolver categoría contra la taxonomía cerrada / categorías del usuario
+            if category_name:
+                resolved = resolve_category(
+                    category_name, cls._active_user_category_names(session, user.id)
+                )
+                if resolved is not None:
+                    category_name = resolved
+                elif create_category_if_missing:
+                    return cls._result(
+                        "needs_category_confirmation",
+                        "La categoría no coincide con tu taxonomía ni tus categorías.",
+                        user_id=user_id,
+                        category_name=category_name,
+                    )
 
             # Resolver categoría
             categoria_id = None

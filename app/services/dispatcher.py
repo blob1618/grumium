@@ -576,6 +576,11 @@ async def _register_single_with_hint(
         f"status={result.status}",
     )
 
+    if result.status == "needs_category_confirmation":
+        return _route_needs_category_confirmation(
+            sender_phone, whatsapp_message_id, text_body, llm_result, category_name
+        )
+
     if result.status != "registered":
         return _registration_dispatch_reply(result, llm_result)
 
@@ -600,6 +605,29 @@ async def _register_single_with_hint(
     reply += f"\n📁 Categoría: {category_name}."
     reply += f"\n{_category_hint_reply()}"
     return reply
+
+
+async def _route_needs_category_confirmation(
+    sender_phone: str,
+    whatsapp_message_id: str | None,
+    text_body: str,
+    extracted_data: dict,
+    category_name: str | None,
+) -> str:
+    """Deriva una categoría no resuelta al flujo existente de confirmación."""
+    pending = PendingMovement(
+        sender_phone=sender_phone,
+        whatsapp_message_id=whatsapp_message_id,
+        original_text=text_body,
+        movement_type=extracted_data.get("movement_type", "egreso"),
+        amount=Decimal(str(extracted_data.get("amount") or 0)),
+        currency=extracted_data.get("currency", "ARS"),
+        description=_movement_description(extracted_data),
+        inferred_category=category_name,
+        llm_result_extra=extracted_data,
+    )
+    await ConversationService.set_pending_movement(sender_phone, pending)
+    return _category_confirmation_reply(category_name or "")
 
 
 async def _register_multiop(
@@ -1499,8 +1527,18 @@ async def process_incoming_message(
                     f"message_id={whatsapp_message_id}",
                     f"status={registration_result.status}",
                 )
-                reply_text = _registration_dispatch_reply(registration_result, extracted_data)
-                service_invoked = "finance"
+                if registration_result.status == "needs_category_confirmation":
+                    reply_text = _route_needs_category_confirmation(
+                        sender_phone,
+                        whatsapp_message_id,
+                        text_body,
+                        extracted_data,
+                        registration_result.category_name,
+                    )
+                    service_invoked = "conversation"
+                else:
+                    reply_text = _registration_dispatch_reply(registration_result, extracted_data)
+                    service_invoked = "finance"
         elif intent in ("confirm_category", "reject_category"):
             # Estos intents no deberían llegar acá sin pending, pero por si acaso
             reply_text = "No encontré un movimiento pendiente para confirmar."
