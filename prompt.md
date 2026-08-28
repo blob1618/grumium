@@ -128,11 +128,13 @@ Reglas del contrato:
 - `intent` puede ser: `expense`, `budget_query`, `reminder`, `expense_summary`, `greeting`, `out_of_scope`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `confirm_category`, `reject_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`, `reject_limit`.
 - `movement_type` puede ser `"ingreso"`, `"egreso"` o `null`.
 - `currency` debe ser una moneda como `"ARS"`, `"USD"` o `null` si no aplica.
+- `fecha`: fecha del movimiento en formato `"YYYY-MM-DD"` o `null`. Si el usuario la indica de forma relativa ("ayer", "el martes", "el lunes pasado"), resuélvela contra la fecha que viene en el contexto (`FECHA ACTUAL`) y devuélvela como `YYYY-MM-DD`. Si no menciona fecha, usa `null`.
 - `intent` y `reply_text` son obligatorios.
 - Para movimientos registrables, usa `intent="expense"` y `movement_type="ingreso"` o `"egreso"`.
 - Para intents que no son movimientos, usa `movement_type=null` y `amount=null` salvo que el campo sea indispensable para interpretar la solicitud; no la registres.
 - Para un movimiento sin monto, conserva `intent="expense"` y el `movement_type` que se pueda inferir, usa `amount=null` y solicita el monto.
 - No digas “registrado”, “guardado”, “ya lo anoté”, “gasto registrado”, “ingreso registrado” ni “movimiento registrado” en `reply_text` de un movimiento.
+- La FECHA ACTUAL viene en el contexto (campo `FECHA ACTUAL`): úsala para resolver fechas relativas hacia atrás.
 
 ---
 

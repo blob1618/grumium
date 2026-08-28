@@ -1,8 +1,13 @@
 import os
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict
 
-from app.services.llm_contract import RETRY_FORMAT_INSTRUCTION, normalize_llm_response
+from app.services.llm_contract import (
+    RETRY_FORMAT_INSTRUCTION,
+    normalize_llm_response,
+    resolve_relative_date,
+)
 from app.services.llm_providers import LLMProvider, create_provider
 
 
@@ -110,22 +115,26 @@ class LLMService:
             "category": m.get("category"),
             "description": m.get("description") or m.get("expense"),
             "reply_text": str(m.get("reply_text") or ""),
+            "fecha": resolve_relative_date(m.get("fecha"), date.today()).isoformat(),  # noqa: DTZ011
         }
 
 
     @classmethod
-    async def process_message(cls, text: str) -> Dict[str, Any]:
+    async def process_message(cls, text: str, *, context: str | None = None) -> Dict[str, Any]:
         """
         Procesa un mensaje de usuario usando el system prompt de prompt.md.
         El LLM debe devolver un JSON estructurado con intent y datos asociados.
 
         Args:
             text: El mensaje de texto del usuario.
+            context: Texto adicional concatenado al system prompt (p.ej. fecha actual).
 
         Returns:
             Dict con los campos del JSON parseado (intent, amount, etc.)
         """
         system_prompt = cls._load_system_prompt()
+        if isinstance(context, str) and context:
+            system_prompt = system_prompt + "\n\n" + context
 
         try:
             provider = cls._get_provider()
