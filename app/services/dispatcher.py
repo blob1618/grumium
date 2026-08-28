@@ -145,6 +145,7 @@ def _registration_dispatch_reply(
 def _multiop_registration_reply(
     results: list[MovementRegistrationResult],
     extracted_data: dict,
+    movements: list | None = None,
 ) -> str:
     """Resume el registro de uno o varios movimientos por mensaje."""
     registered = sum(1 for r in results if r.status == "registered")
@@ -152,7 +153,8 @@ def _multiop_registration_reply(
 
     if registered == total:
         if total == 1:
-            return _registered_reply(extracted_data)
+            single = (movements or [extracted_data])[0]
+            return _registered_reply(single)
         return f"✅ Registré los {total} movimientos."
 
     if registered == 0:
@@ -654,7 +656,7 @@ async def _register_multiop(
             f"status={result.status}",
         )
         results.append(result)
-    return _multiop_registration_reply(results, extracted_data)
+    return _multiop_registration_reply(results, extracted_data, movements)
 
 
 # ---------------------------------------------------------------------------

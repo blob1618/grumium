@@ -1,5 +1,8 @@
 import pytest
+from unittest.mock import MagicMock
 
+from app.services.dispatcher import _register_multiop
+from app.services.finance import FinanceService, MovementRegistrationResult
 from tests.test_llm import _process_message_with_mock_response
 
 
@@ -51,3 +54,38 @@ async def test_invalid_movement_in_list_is_normalized_not_dropped_silently():
     result = await _process_message_with_mock_response(mock_response)
     assert len(result["movements"]) == 2
     assert result["movements"][1]["amount"] is None  # normalizado, dispatcher decidirá
+
+
+@pytest.mark.asyncio
+async def test_single_movement_in_list_reply_not_none_amount(monkeypatch):
+    """STK-157: un solo movimiento dentro de movements[] (sin monto en la raíz)
+    debe responder con el monto real del movimiento, no '$None'."""
+    monkeypatch.setattr(
+        FinanceService,
+        "register_movement_from_whatsapp_text",
+        MagicMock(
+            return_value=MovementRegistrationResult(status="registered", message="ok")
+        ),
+    )
+
+    extracted_data = {
+        "intent": "expense",
+        "reply_text": "",
+        "movements": [
+            {"movement_type": "egreso", "amount": 1500, "currency": "ARS",
+             "description": "super", "reply_text": ""}
+        ],
+    }
+    movements = extracted_data["movements"]
+
+    reply = await _register_multiop(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.single",
+        text_body="Gasté 1500 en super",
+        extracted_data=extracted_data,
+        movements=movements,
+    )
+
+    assert "$None" not in reply
+    assert "1500" in reply
+
