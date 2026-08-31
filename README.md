@@ -74,7 +74,7 @@ Ver [testing/README.md](testing/README.md) para la guía completa.
 | Recurso | URL |
 | ------- | --- |
 | Backend (GitHub) | https://github.com/blob1618/luka |
-| Frontend (Dashboard) | https://github.com/sandralilianaacosta-ui/luka_frontend |
+| Frontend (Dashboard) | https://github.com/blob1618/luka_frontend |
 | Deploy en Render | https://luka-f2nb.onrender.com |
 | DeepWiki - Overview | https://deepwiki.com/blob1618/luka/1-luka-overview |
 | DeepWiki - Arquitectura | https://deepwiki.com/blob1618/luka/2-core-architecture |
