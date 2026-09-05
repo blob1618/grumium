@@ -20,6 +20,16 @@ WhatsApp webhook -> LLMService -> FinanceService -> public.movimientos_financier
 
 El flujo oficial de alta/vinculación de usuarios, las categorías default o personalizadas y la consulta de movimientos de STK-128 quedan fuera de STK-35. El acceso seguro al futuro micrositio/dashboard mediante Magic Link está relacionado con STK-54 y requiere coordinación entre backend y frontend; no está implementado por este ticket.
 
+## Presupuestos por categoría (HU-PRE-01 / STK-47)
+
+- `LimitService` mantiene un único límite por usuario, categoría, inicio de período y moneda.
+- `BudgetService` calcula el gasto consumido desde `movimientos_financieros`; no persiste saldos derivados.
+- Solo consumen presupuesto los egresos con categoría, moneda coincidente y fecha dentro del período.
+- `budget_query` consulta una categoría o todos los límites del período y la respuesta se construye en backend.
+- Después de registrar un egreso o cambiar su categoría, el dispatcher evalúa el presupuesto y agrega una alerta si quedó excedido.
+- Una categoría canónica inexistente requiere confirmación multi-turno antes de que el límite pueda crearla.
+- La migración `005_presupuesto_control_gasto.sql` debe aplicarse y verificarse operativamente antes de desplegar código que dependa de ella en un entorno compartido.
+
 ## Mapa del repositorio
 
 - `app/main.py`: app FastAPI, endpoint de health, verificación del webhook de WhatsApp e ingesta de mensajes.
@@ -27,6 +37,8 @@ El flujo oficial de alta/vinculación de usuarios, las categorías default o per
 - `app/services/llm.py`: fachada LLM que interpreta mensajes y normaliza el tipo de movimiento.
 - `app/services/llm_providers/`: implementaciones de los providers Gemini y Mistral.
 - `app/services/finance.py`: validación y persistencia de movimientos financieros y otras reglas de negocio.
+- `app/services/limit.py`: CRUD y validación de límites mensuales por categoría.
+- `app/services/budget.py`: cálculo de consumo, disponibilidad, porcentaje y exceso.
 - `app/models/database.py`: engine, sesión y modelos SQLAlchemy.
 - `tests/`: tests del backend.
 - `testing/`: entorno de testing de WhatsApp en Streamlit contra el mismo backend, se inicia solo con Docker o Podman (ver `testing/README.md`).

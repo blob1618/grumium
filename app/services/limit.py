@@ -6,12 +6,14 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.database import Categoria, LimiteCategoria, SessionLocal, Usuario
-from app.services.finance import FinanceService
+from app.services.categories_taxonomy import resolve_category_for_user
 
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+MAX_LIMIT_AMOUNT = Decimal("9999999999.99")
 
 _MESES = [
     "", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -29,6 +31,7 @@ class LimitResult:
     amount: Decimal | None = None
     month: int | None = None
     year: int | None = None
+    currency: str | None = None
     proposed_month: int | None = None
     proposed_year: int | None = None
     candidates: list[dict[str, Any]] = field(default_factory=list)
@@ -40,6 +43,7 @@ class LimitEntry:
     amount: Decimal
     month: int
     year: int
+    currency: str = "ARS"
 
 
 @dataclass
@@ -67,9 +71,18 @@ class LimitService:
             amount = Decimal(str(value))
         except (InvalidOperation, ValueError):
             return None
-        if not amount.is_finite() or amount <= 0:
+        if not amount.is_finite() or amount <= 0 or amount > MAX_LIMIT_AMOUNT:
             return None
-        return amount
+        return amount.quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _normalize_currency(value: Any) -> str | None:
+        if value is None:
+            return "ARS"
+        currency = str(value).strip().upper()
+        if len(currency) != 3 or not currency.isalpha():
+            return None
+        return currency
 
     @staticmethod
     def _normalize_month(value: Any) -> int | None:
@@ -91,7 +104,7 @@ class LimitService:
             year = int(value)
         except (TypeError, ValueError):
             return None
-        return year
+        return year if 1 <= year <= 9999 else None
 
     @classmethod
     def _result(
@@ -103,6 +116,7 @@ class LimitService:
         amount: Decimal | None = None,
         month: int | None = None,
         year: int | None = None,
+        currency: str | None = None,
         proposed_month: int | None = None,
         proposed_year: int | None = None,
         candidates: list[dict[str, Any]] | None = None,
@@ -115,6 +129,7 @@ class LimitService:
             amount=amount,
             month=month,
             year=year,
+            currency=currency,
             proposed_month=proposed_month,
             proposed_year=proposed_year,
             candidates=candidates or [],
@@ -127,6 +142,65 @@ class LimitService:
             .filter(Usuario.whatsapp_id == sender_phone)
             .first()
         )
+
+    @staticmethod
+    def _active_category_names(session, user_id: Any) -> set[str]:
+        return {
+            row[0]
+            for row in (
+                session.query(Categoria.nombre)
+                .filter(
+                    Categoria.usuario_id == user_id,
+                    Categoria.esta_eliminado.is_(False),
+                )
+                .all()
+            )
+        }
+
+    @staticmethod
+    def _find_category(session, user_id: Any, category_name: str, *, active=True):
+        query = session.query(Categoria).filter(
+            Categoria.usuario_id == user_id,
+            func.lower(func.trim(Categoria.nombre)) == category_name.strip().lower(),
+        )
+        if active is not None:
+            query = query.filter(Categoria.esta_eliminado.is_(not active))
+        return query.first()
+
+    @classmethod
+    def _resolve_category(
+        cls,
+        session,
+        user_id: Any,
+        category_name: str,
+        *,
+        allow_creation: bool,
+    ) -> tuple[Categoria | None, str, str | None]:
+        resolved = resolve_category_for_user(
+            category_name,
+            cls._active_category_names(session, user_id),
+        )
+        if resolved is None:
+            return None, category_name, "invalid_category"
+        category = cls._find_category(session, user_id, resolved)
+        if category is not None:
+            return category, category.nombre, None
+        if not allow_creation:
+            return None, resolved, "needs_category_confirmation"
+
+        deleted = cls._find_category(session, user_id, resolved, active=False)
+        if deleted is not None:
+            deleted.esta_eliminado = False
+            return deleted, deleted.nombre, None
+        category = Categoria(
+            usuario_id=user_id,
+            nombre=resolved,
+            es_default=False,
+            esta_eliminado=False,
+        )
+        session.add(category)
+        session.flush()
+        return category, category.nombre, None
 
     @staticmethod
     def _uuid(value: Any) -> UUID | None:
@@ -166,6 +240,52 @@ class LimitService:
             return today.year + 1, month, True
         return today.year, month, False
 
+    @staticmethod
+    def _atomic_upsert(
+        session,
+        *,
+        user_id,
+        category_id,
+        amount: Decimal,
+        currency: str,
+        period_start: date,
+        period_end: date,
+    ) -> str:
+        values = {
+            "usuario_id": user_id,
+            "categoria_id": category_id,
+            "cantidad_max": amount,
+            "moneda": currency,
+            "inicio_periodo": period_start,
+            "fin_periodo": period_end,
+        }
+        dialect_name = session.get_bind().dialect.name
+        if dialect_name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert
+        elif dialect_name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert
+        else:
+            limite = LimiteCategoria(**values)
+            session.add(limite)
+            session.flush()
+            return str(limite.id)
+
+        statement = insert(LimiteCategoria).values(**values)
+        statement = statement.on_conflict_do_update(
+            index_elements=[
+                LimiteCategoria.usuario_id,
+                LimiteCategoria.categoria_id,
+                LimiteCategoria.inicio_periodo,
+                LimiteCategoria.moneda,
+            ],
+            set_={
+                "cantidad_max": amount,
+                "fin_periodo": period_end,
+                "actualizado_en": func.now(),
+            },
+        ).returning(LimiteCategoria.id)
+        return str(session.execute(statement).scalar_one())
+
     # ------------------------------------------------------------------
     # Creación / edición (upsert por categoría + período)
     # ------------------------------------------------------------------
@@ -177,6 +297,7 @@ class LimitService:
         data: dict,
         last_limit=None,
         today: date | None = None,
+        allow_category_creation: bool = False,
     ) -> LimitResult:
         """Crea o actualiza (upsert) el límite mensual de una categoría.
 
@@ -200,13 +321,23 @@ class LimitService:
 
         raw_month = data.get("limit_month")
         month = cls._normalize_month(raw_month) if raw_month is not None else None
+        if raw_month is not None and month is None:
+            return cls._result("invalid_month", "month must be between 1 and 12")
         if month is None and last_limit is not None:
             month = cls._normalize_month(last_limit.month)
 
         raw_year = data.get("limit_year")
         year = cls._normalize_year(raw_year) if raw_year is not None else None
+        if raw_year is not None and year is None:
+            return cls._result("invalid_year", "year must be between 1 and 9999")
         if year is None and last_limit is not None:
             year = cls._normalize_year(last_limit.year)
+
+        currency = cls._normalize_currency(data.get("limit_currency"))
+        if data.get("limit_currency") is None and last_limit is not None:
+            currency = cls._normalize_currency(getattr(last_limit, "currency", "ARS"))
+        if currency is None:
+            return cls._result("invalid_currency", "currency must be a three-letter code")
 
         if amount is None:
             return cls._result(
@@ -221,6 +352,16 @@ class LimitService:
                 amount=amount,
                 month=month,
                 year=year,
+                currency=currency,
+            )
+        if raw_year is not None and raw_month is None and last_limit is None:
+            return cls._result(
+                "needs_month",
+                "month is required when year is provided",
+                category_name=category,
+                amount=amount,
+                year=year,
+                currency=currency,
             )
 
         resolved_year, resolved_month, needs_confirmation = cls._resolve_period(
@@ -242,8 +383,26 @@ class LimitService:
                 "month already passed",
                 category_name=category,
                 amount=amount,
+                currency=currency,
                 proposed_month=resolved_month,
                 proposed_year=resolved_year,
+            )
+
+        inicio = date(resolved_year, resolved_month, 1)
+        fin = date(
+            resolved_year,
+            resolved_month,
+            calendar.monthrange(resolved_year, resolved_month)[1],
+        )
+        if fin < today:
+            return cls._result(
+                "expired_period",
+                "cannot create a limit for an expired period",
+                category_name=category,
+                amount=amount,
+                month=resolved_month,
+                year=resolved_year,
+                currency=currency,
             )
 
         session = SessionLocal()
@@ -252,57 +411,80 @@ class LimitService:
             if user is None:
                 return cls._result("user_not_found", "user not found")
 
-            cat_result = FinanceService.create_category(user.id, category)
-            if cat_result.status == "error":
-                return cls._result(
-                    "persistence_error",
-                    "could not resolve category",
-                )
-
-            categoria_id = cls._uuid(cat_result.category_id)
-            if categoria_id is None:
-                return cls._result(
-                    "persistence_error",
-                    "could not resolve category",
-                )
-
-            category_name = cat_result.category_name or category
-            inicio = date(resolved_year, resolved_month, 1)
-            fin = date(
-                resolved_year,
-                resolved_month,
-                calendar.monthrange(resolved_year, resolved_month)[1],
+            categoria, category_name, category_status = cls._resolve_category(
+                session,
+                user.id,
+                category,
+                allow_creation=allow_category_creation,
             )
+            if category_status is not None:
+                return cls._result(
+                    category_status,
+                    "category requires confirmation"
+                    if category_status == "needs_category_confirmation"
+                    else "category is outside the configured taxonomy",
+                    category_name=category_name,
+                    amount=amount,
+                    month=resolved_month,
+                    year=resolved_year,
+                    currency=currency,
+                )
+            categoria_id = categoria.id
 
             # Si la solicitud es una edición del último límite (last_limit),
             # se modifica ese registro concreto (categoría, monto y período),
             # en lugar de crear/actualizar otro por (categoría + período).
             if last_limit is not None:
                 edit_id = cls._uuid(getattr(last_limit, "limit_id", None))
-                if edit_id is not None:
-                    target = (
-                        session.query(LimiteCategoria)
-                        .filter(
-                            LimiteCategoria.id == edit_id,
-                            LimiteCategoria.usuario_id == user.id,
-                        )
-                        .first()
+                if edit_id is None:
+                    return cls._result("stale_context", "invalid limit edit context")
+                target = (
+                    session.query(LimiteCategoria)
+                    .filter(
+                        LimiteCategoria.id == edit_id,
+                        LimiteCategoria.usuario_id == user.id,
                     )
-                    if target is not None:
-                        target.cantidad_max = amount
-                        target.categoria_id = categoria_id
-                        target.inicio_periodo = inicio
-                        target.fin_periodo = fin
-                        session.commit()
-                        return cls._result(
-                            "updated",
-                            "limit updated",
-                            limit_id=str(target.id),
-                            category_name=category_name,
-                            amount=amount,
-                            month=resolved_month,
-                            year=resolved_year,
-                        )
+                    .first()
+                )
+                if target is None:
+                    return cls._result("stale_context", "limit no longer exists")
+                collision = (
+                    session.query(LimiteCategoria.id)
+                    .filter(
+                        LimiteCategoria.usuario_id == user.id,
+                        LimiteCategoria.categoria_id == categoria_id,
+                        LimiteCategoria.inicio_periodo == inicio,
+                        LimiteCategoria.moneda == currency,
+                        LimiteCategoria.id != target.id,
+                    )
+                    .first()
+                )
+                if collision is not None:
+                    return cls._result(
+                        "conflict",
+                        "another limit already exists for that category and period",
+                        category_name=category_name,
+                        amount=amount,
+                        month=resolved_month,
+                        year=resolved_year,
+                        currency=currency,
+                    )
+                target.cantidad_max = amount
+                target.categoria_id = categoria_id
+                target.moneda = currency
+                target.inicio_periodo = inicio
+                target.fin_periodo = fin
+                session.commit()
+                return cls._result(
+                    "updated",
+                    "limit updated",
+                    limit_id=str(target.id),
+                    category_name=category_name,
+                    amount=amount,
+                    month=resolved_month,
+                    year=resolved_year,
+                    currency=currency,
+                )
 
             existing = (
                 session.query(LimiteCategoria)
@@ -310,6 +492,7 @@ class LimitService:
                     LimiteCategoria.usuario_id == user.id,
                     LimiteCategoria.categoria_id == categoria_id,
                     LimiteCategoria.inicio_periodo == inicio,
+                    LimiteCategoria.moneda == currency,
                 )
                 .first()
             )
@@ -326,25 +509,28 @@ class LimitService:
                     amount=amount,
                     month=resolved_month,
                     year=resolved_year,
+                    currency=currency,
                 )
 
-            limite = LimiteCategoria(
-                usuario_id=user.id,
-                categoria_id=categoria_id,
-                cantidad_max=amount,
-                inicio_periodo=inicio,
-                fin_periodo=fin,
+            limit_id = cls._atomic_upsert(
+                session,
+                user_id=user.id,
+                category_id=categoria_id,
+                amount=amount,
+                currency=currency,
+                period_start=inicio,
+                period_end=fin,
             )
-            session.add(limite)
             session.commit()
             return cls._result(
                 "created",
                 "limit created",
-                limit_id=str(limite.id),
+                limit_id=limit_id,
                 category_name=category_name,
                 amount=amount,
                 month=resolved_month,
                 year=resolved_year,
+                currency=currency,
             )
 
         except SQLAlchemyError as exc:
@@ -385,8 +571,13 @@ class LimitService:
                 .filter(
                     LimiteCategoria.usuario_id == user_id,
                     LimiteCategoria.fin_periodo >= today,
+                    Categoria.esta_eliminado.is_(False),
                 )
-                .order_by(LimiteCategoria.inicio_periodo.asc())
+                .order_by(
+                    LimiteCategoria.inicio_periodo.asc(),
+                    Categoria.nombre.asc(),
+                    LimiteCategoria.moneda.asc(),
+                )
                 .all()
             )
             entries = [
@@ -395,6 +586,7 @@ class LimitService:
                     amount=limite.cantidad_max,
                     month=limite.inicio_periodo.month,
                     year=limite.inicio_periodo.year,
+                    currency=limite.moneda,
                 )
                 for limite, categoria in rows
             ]
@@ -420,6 +612,7 @@ class LimitService:
         category: str,
         month: int | None = None,
         year: int | None = None,
+        currency: str | None = None,
         today: date | None = None,
     ) -> LimitResult:
         """Elimina un límite vigente por categoría.
@@ -435,8 +628,18 @@ class LimitService:
         if not category:
             return cls._result("invalid_data", "category is required")
 
+        raw_month = month
+        raw_year = year
         month = cls._normalize_month(month)
         year = cls._normalize_year(year)
+        raw_currency = currency
+        currency = cls._normalize_currency(currency) if currency is not None else None
+        if raw_month is not None and month is None:
+            return cls._result("invalid_month", "month must be between 1 and 12")
+        if raw_year is not None and year is None:
+            return cls._result("invalid_year", "year must be between 1 and 9999")
+        if raw_currency is not None and currency is None:
+            return cls._result("invalid_currency", "invalid currency")
 
         session = SessionLocal()
         try:
@@ -444,7 +647,7 @@ class LimitService:
             if user is None:
                 return cls._result("user_not_found", "user not found")
 
-            categoria = FinanceService._find_category(session, user.id, category)
+            categoria = cls._find_category(session, user.id, category)
             if categoria is None:
                 return cls._result("not_found", "category has no limits")
 
@@ -455,8 +658,14 @@ class LimitService:
                     LimiteCategoria.categoria_id == categoria.id,
                     LimiteCategoria.fin_periodo >= today,
                 )
+                .order_by(
+                    LimiteCategoria.inicio_periodo.asc(),
+                    LimiteCategoria.moneda.asc(),
+                )
                 .all()
             )
+            if currency is not None:
+                limits = [lim for lim in limits if lim.moneda == currency]
             if not limits:
                 return cls._result("not_found", "category has no limits")
 
@@ -470,6 +679,7 @@ class LimitService:
                             "month": lim.inicio_periodo.month,
                             "year": lim.inicio_periodo.year,
                             "amount": str(lim.cantidad_max),
+                            "currency": lim.moneda,
                         }
                         for lim in limits
                     ]
@@ -493,9 +703,30 @@ class LimitService:
                     year_matches = [
                         lim for lim in month_matches if lim.inicio_periodo.year == year
                     ]
-                    if year_matches:
-                        month_matches = year_matches
-                target = min(month_matches, key=lambda lim: lim.inicio_periodo)
+                    if not year_matches:
+                        return cls._result(
+                            "not_found",
+                            "no limit for that month and year",
+                            category_name=categoria.nombre,
+                        )
+                    month_matches = year_matches
+                if len(month_matches) > 1 and currency is None:
+                    return cls._result(
+                        "needs_month_selection",
+                        "select the currency",
+                        category_name=categoria.nombre,
+                        candidates=[
+                            {
+                                "limit_id": str(lim.id),
+                                "month": lim.inicio_periodo.month,
+                                "year": lim.inicio_periodo.year,
+                                "amount": str(lim.cantidad_max),
+                                "currency": lim.moneda,
+                            }
+                            for lim in month_matches
+                        ],
+                    )
+                target = month_matches[0]
 
             session.delete(target)
             session.commit()
@@ -507,6 +738,7 @@ class LimitService:
                 amount=target.cantidad_max,
                 month=target.inicio_periodo.month,
                 year=target.inicio_periodo.year,
+                currency=target.moneda,
             )
 
         except Exception as exc:

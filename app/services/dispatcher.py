@@ -5,10 +5,12 @@ Extracted from app/main.py so both the WhatsApp webhook and the testing
 environment can invoke the same logic.
 """
 
+import asyncio
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.sql import func
 
@@ -22,6 +24,7 @@ from app.services.conversation import (
     PendingMovement,
     PendingReminder,
 )
+from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService
 from app.services.finance import FinanceService, MovementRegistrationResult
 from app.services.limit import LimitService
@@ -29,6 +32,9 @@ from app.services.llm import LLMService
 from app.services.llm_contract import resolve_relative_date
 from app.services.onboarding import OnboardingDecision, OnboardingService
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService
+
+
+ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
 
 @dataclass
@@ -455,7 +461,8 @@ async def _handle_change_category(sender_phone: str, extracted_data: dict) -> st
         session.close()
 
     # Actualizar categoría
-    result = FinanceService.update_movement_category(
+    result = await asyncio.to_thread(
+        FinanceService.update_movement_category,
         movement_id=last_movement.movement_id,
         user_id=user_id,
         new_category_name=new_category,
@@ -464,19 +471,33 @@ async def _handle_change_category(sender_phone: str, extracted_data: dict) -> st
 
     if result.status == "updated":
         # Actualizar el last_movement con la nueva categoría
-        last_movement.category_name = new_category
+        result_category = getattr(result, "category_name", None)
+        resolved_category = (
+            result_category.strip()
+            if isinstance(result_category, str) and result_category.strip()
+            else new_category
+        )
+        last_movement.category_name = resolved_category
         await ConversationService.set_last_movement(sender_phone, last_movement)
 
         amount = _format_amount(last_movement.amount)
         currency = last_movement.currency.upper()
-        return _category_changed_reply(
+        reply = _category_changed_reply(
             description=last_movement.description,
             amount=amount,
             currency=currency,
-            category_name=new_category,
+            category_name=resolved_category,
         )
+        evaluation = await asyncio.to_thread(
+            BudgetService.evaluate_movement,
+            result.movement_id,
+        )
+        alert = _budget_alert_reply(evaluation)
+        return f"{reply}\n\n{alert}" if alert else reply
     elif result.status == "not_found":
         return "No encontré el movimiento para cambiarle la categoría."
+    elif result.status == "category_not_found":
+        return f"No encontré una categoría activa llamada {new_category}."
     else:
         return "Hubo un problema actualizando la categoría. Intentá de nuevo."
 
@@ -560,7 +581,8 @@ async def _register_single_with_hint(
 ) -> str:
     category_name = mov.get("category")
     llm_result = {**extracted_data, **mov}
-    result = FinanceService.register_movement_with_category(
+    result = await asyncio.to_thread(
+        FinanceService.register_movement_with_category,
         sender_phone=sender_phone,
         whatsapp_message_id=whatsapp_message_id,
         original_text=text_body,
@@ -608,7 +630,12 @@ async def _register_single_with_hint(
     reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
     reply += f"\n📁 Categoría: {category_name}."
     reply += f"\n{_category_hint_reply()}"
-    return reply
+    evaluation = await asyncio.to_thread(
+        BudgetService.evaluate_movement,
+        result.movement_id,
+    )
+    alert = _budget_alert_reply(evaluation)
+    return f"{reply}\n\n{alert}" if alert else reply
 
 
 async def _route_needs_category_confirmation(
@@ -644,7 +671,8 @@ async def _register_multiop(
     results = []
     for mov in movements:
         llm_result = {**extracted_data, **mov}
-        result = FinanceService.register_movement_from_whatsapp_text(
+        result = await asyncio.to_thread(
+            FinanceService.register_movement_from_whatsapp_text,
             sender_phone=sender_phone,
             whatsapp_message_id=whatsapp_message_id,
             original_text=text_body,
@@ -658,7 +686,21 @@ async def _register_multiop(
             f"status={result.status}",
         )
         results.append(result)
-    return _multiop_registration_reply(results, extracted_data, movements)
+    reply = _multiop_registration_reply(results, extracted_data, movements)
+    registered_ids = [
+        result.movement_id
+        for result in results
+        if result.status == "registered" and result.movement_id
+    ]
+    if registered_ids:
+        evaluations = await asyncio.to_thread(
+            BudgetService.evaluate_movements,
+            registered_ids,
+        )
+        alerts = _unique_budget_alerts(evaluations)
+        if alerts:
+            reply = f"{reply}\n\n" + "\n\n".join(alerts)
+    return reply
 
 
 # ---------------------------------------------------------------------------
@@ -692,11 +734,55 @@ def _limit_month_label(month: int, year: int) -> str:
     return LimitService.month_label(month, year, _current_year())
 
 
+def _budget_status_reply(status: BudgetStatus) -> str:
+    label = _limit_month_label(status.period_start.month, status.period_start.year)
+    spent = _format_limit_amount(status.spent_amount)
+    limit = _format_limit_amount(status.limit_amount)
+    if status.state == "exceeded":
+        exceeded = _format_limit_amount(status.exceeded_amount)
+        return (
+            f"⚠️ *{status.category_name} — {label}*\n"
+            f"Gastaste ${spent} {status.currency} de ${limit} {status.currency}.\n"
+            f"Superaste el límite en ${exceeded} {status.currency}."
+        )
+    if status.state == "reached":
+        return (
+            f"🎯 *{status.category_name} — {label}*\n"
+            f"Alcanzaste tu límite de ${limit} {status.currency}."
+        )
+    remaining = _format_limit_amount(status.remaining_amount)
+    return (
+        f"📊 *{status.category_name} — {label}*\n"
+        f"Gastaste ${spent} {status.currency} de ${limit} {status.currency}.\n"
+        f"Te quedan ${remaining} {status.currency} ({status.percentage}% usado)."
+    )
+
+
+def _budget_alert_reply(evaluation: BudgetEvaluation) -> str:
+    if not evaluation.should_alert or evaluation.budget is None:
+        return ""
+    return _budget_status_reply(evaluation.budget)
+
+
+def _unique_budget_alerts(evaluations: list[BudgetEvaluation]) -> list[str]:
+    alerts: list[str] = []
+    seen: set[str] = set()
+    for evaluation in evaluations:
+        if not evaluation.should_alert or evaluation.budget is None:
+            continue
+        if evaluation.budget.limit_id in seen:
+            continue
+        seen.add(evaluation.budget.limit_id)
+        alerts.append(_budget_status_reply(evaluation.budget))
+    return alerts
+
+
 def _limit_registered_reply(
     category_name: str,
     amount,
     month: int,
     year: int,
+    currency: str = "ARS",
     *,
     edit: bool = False,
 ) -> str:
@@ -705,12 +791,12 @@ def _limit_registered_reply(
     if edit:
         reply = (
             f"✅ Listo, se Registró tu límite para {label}. "
-            f"📁 Categoría: {category_name}. 🎯 Límite a gastar: ${amount_text}."
+            f"📁 Categoría: {category_name}. 🎯 Límite a gastar: ${amount_text} {currency}."
         )
     else:
         reply = (
             f"✅ Registré tu límite para {label}. "
-            f"📁 Categoría: {category_name}. 🎯 Límite a gastar: ${amount_text}."
+            f"📁 Categoría: {category_name}. 🎯 Límite a gastar: ${amount_text} {currency}."
         )
         reply += "\n¿No te convence algo? Indícame y lo cambiamos."
     return reply
@@ -728,6 +814,8 @@ def _limit_missing_reply(result) -> str:
         if result.category_name:
             return f"¿Cuál es el monto máximo del límite para {result.category_name}?"
         return "¿Cuál es el monto máximo del límite?"
+    if result.status == "needs_month":
+        return "¿Para qué mes querés definir el límite?"
     return "Necesito que me completes la categoría o el monto del límite."
 
 
@@ -739,7 +827,7 @@ def _limit_list_reply(result) -> str:
     for entry in limits:
         amount = _format_limit_amount(entry.amount)
         label = _limit_month_label(entry.month, entry.year)
-        lines.append(f"• {entry.category_name} — ${amount} — {label}")
+        lines.append(f"• {entry.category_name} — ${amount} {entry.currency} — {label}")
     return "\n".join(lines)
 
 
@@ -748,7 +836,8 @@ def _limit_selection_reply(category_name: str, candidates: list[dict]) -> str:
     for candidate in candidates:
         label = _limit_month_label(candidate["month"], candidate["year"])
         amount = _format_limit_amount(candidate["amount"])
-        lines.append(f"• {label} — ${amount}")
+        currency = candidate.get("currency", "ARS")
+        lines.append(f"• {label} — ${amount} {currency}")
     return "\n".join(lines)
 
 
@@ -868,6 +957,7 @@ def _limit_base_data(pending: PendingLimit) -> dict:
         "limit_amount": float(pending.amount) if pending.amount is not None else None,
         "limit_month": pending.month,
         "limit_year": pending.year,
+        "limit_currency": pending.currency,
     }
 
 
@@ -882,6 +972,7 @@ def _last_limit_from_pending(pending: PendingLimit) -> LastCreatedLimit | None:
         amount=pending.amount,
         month=pending.month,
         year=pending.year,
+        currency=pending.currency,
     )
 
 
@@ -890,12 +981,19 @@ async def _handle_create_limit(
     extracted_data: dict,
     last_limit: LastCreatedLimit | None = None,
     edit: bool | None = None,
+    allow_category_creation: bool = False,
 ) -> str:
     """Crea o edita un límite de gasto, orquestando los pasos multi-turno."""
     if edit is None:
         edit = last_limit is not None
 
-    result = LimitService.create_limit(sender_phone, extracted_data, last_limit=last_limit)
+    result = await asyncio.to_thread(
+        LimitService.create_limit,
+        sender_phone,
+        extracted_data,
+        last_limit=last_limit,
+        allow_category_creation=allow_category_creation,
+    )
 
     if result.status in ("created", "updated"):
         await ConversationService.set_last_limit(
@@ -907,16 +1005,26 @@ async def _handle_create_limit(
                 amount=result.amount,
                 month=result.month,
                 year=result.year,
+                currency=result.currency or "ARS",
             ),
         )
         await ConversationService.clear_state(sender_phone)
-        return _limit_registered_reply(
+        reply = _limit_registered_reply(
             result.category_name,
             result.amount,
             result.month,
             result.year,
+            result.currency or "ARS",
             edit=edit,
         )
+        budget_result = await asyncio.to_thread(
+            BudgetService.get_status_for_limit,
+            result.limit_id,
+        )
+        if budget_result.status == "ok" and budget_result.budget is not None:
+            if budget_result.budget.state in {"reached", "exceeded"}:
+                reply += f"\n\n{_budget_status_reply(budget_result.budget)}"
+        return reply
 
     if result.status == "needs_year_confirmation":
         pending = PendingLimit(
@@ -925,6 +1033,7 @@ async def _handle_create_limit(
             amount=result.amount,
             month=result.proposed_month,
             year=result.proposed_year,
+            currency=result.currency or "ARS",
             is_edit=edit,
             limit_id=last_limit.limit_id if last_limit is not None else None,
         )
@@ -935,7 +1044,28 @@ async def _handle_create_limit(
         )
         return _year_confirmation_reply(result.proposed_month, result.proposed_year)
 
-    if result.status in ("needs_category", "needs_amount"):
+    if result.status == "needs_category_confirmation":
+        pending = PendingLimit(
+            sender_phone=sender_phone,
+            category=result.category_name,
+            amount=result.amount,
+            month=result.month,
+            year=result.year,
+            currency=result.currency or "ARS",
+            is_edit=edit,
+            limit_id=last_limit.limit_id if last_limit is not None else None,
+        )
+        await ConversationService.set_pending_limit(
+            sender_phone,
+            pending,
+            step="awaiting_limit_category_confirmation",
+        )
+        return (
+            f"No tenés la categoría {result.category_name}. "
+            "¿Querés crearla y aplicar el límite?"
+        )
+
+    if result.status in ("needs_category", "needs_amount", "needs_month"):
         month = extracted_data.get("limit_month")
         year = extracted_data.get("limit_year")
         if month is None and last_limit is not None:
@@ -948,6 +1078,8 @@ async def _handle_create_limit(
             amount=result.amount,
             month=month,
             year=year,
+            currency=extracted_data.get("limit_currency")
+            or getattr(last_limit, "currency", "ARS"),
             is_edit=edit,
             limit_id=last_limit.limit_id if last_limit is not None else None,
         )
@@ -962,6 +1094,17 @@ async def _handle_create_limit(
         return "No encontré una cuenta vinculada a este WhatsApp."
     if result.status == "persistence_error":
         return "Hubo un problema guardando tu límite. Intentá nuevamente en unos minutos."
+    if result.status == "invalid_category":
+        return "Esa categoría no pertenece a tu lista ni a las categorías disponibles."
+    if result.status in {"invalid_month", "invalid_year", "invalid_currency"}:
+        return "El mes, año o moneda del límite no es válido. ¿Podés revisarlo?"
+    if result.status == "expired_period":
+        return "No puedo crear un límite para un período que ya terminó."
+    if result.status == "stale_context":
+        await ConversationService.clear_last_limit(sender_phone)
+        return "Ese límite ya no existe. Podés crear uno nuevo indicando categoría y monto."
+    if result.status == "conflict":
+        return "Ya existe un límite para esa categoría, mes y moneda."
     return "No pude procesar tu solicitud de límite."
 
 
@@ -984,7 +1127,9 @@ async def _handle_list_limits(sender_phone: str) -> str:
         user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
         if user is None:
             return "No encontré tu cuenta."
-        result = LimitService.list_limits(user.id)
+        result = await asyncio.to_thread(LimitService.list_limits, user.id)
+        if result.status == "error":
+            return "Hubo un problema consultando tus límites."
         return _limit_list_reply(result)
     except Exception as exc:
         print(f"[LIMIT_LIST] Error: {type(exc).__name__}: {exc}")
@@ -993,10 +1138,76 @@ async def _handle_list_limits(sender_phone: str) -> str:
         session.close()
 
 
+def _user_id_by_phone(sender_phone: str):
+    session = SessionLocal()
+    try:
+        user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+        return user.id if user is not None else None
+    finally:
+        session.close()
+
+
+def _budget_reference_date(extracted_data: dict) -> date | None:
+    today = datetime.now(ARGENTINA_TZ).date()
+    month = extracted_data.get("limit_month")
+    year = extracted_data.get("limit_year")
+    if year is not None and month is None:
+        return None
+    month = month or today.month
+    year = year or today.year
+    try:
+        return date(int(year), int(month), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _handle_budget_query(sender_phone: str, extracted_data: dict) -> str:
+    reference_date = _budget_reference_date(extracted_data)
+    if reference_date is None:
+        return "¿Para qué mes querés consultar el presupuesto?"
+    user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    if user_id is None:
+        return "No encontré tu cuenta."
+    category_name = extracted_data.get("limit_category")
+    currency = extracted_data.get("limit_currency") or "ARS"
+    if category_name:
+        result = await asyncio.to_thread(
+            BudgetService.get_status,
+            user_id,
+            category_name,
+            reference_date,
+            currency,
+        )
+        if result.status == "ok" and result.budget is not None:
+            return _budget_status_reply(result.budget)
+        if result.status == "category_not_found":
+            return f"No encontré una categoría activa llamada {category_name}."
+        if result.status == "not_found":
+            label = _limit_month_label(reference_date.month, reference_date.year)
+            return f"No tenés un límite de {category_name} para {label} en {currency}."
+        if result.status == "invalid_data":
+            return "La categoría o moneda de la consulta no es válida."
+        return "Hubo un problema consultando tu presupuesto. Intentá nuevamente."
+
+    result = await asyncio.to_thread(
+        BudgetService.list_statuses,
+        user_id,
+        reference_date,
+        currency,
+    )
+    if result.status != "ok":
+        return "Hubo un problema consultando tus presupuestos. Intentá nuevamente."
+    if not result.budgets:
+        label = _limit_month_label(reference_date.month, reference_date.year)
+        return f"No tenés presupuestos definidos para {label} en {currency}."
+    return "\n\n".join(_budget_status_reply(status) for status in result.budgets)
+
+
 async def _handle_delete_limit(sender_phone: str, extracted_data: dict) -> str:
     category_name = extracted_data.get("limit_category")
     month = extracted_data.get("limit_month")
     year = extracted_data.get("limit_year")
+    currency = extracted_data.get("limit_currency")
     if not category_name:
         await ConversationService.set_pending_limit_delete_category(
             sender_phone,
@@ -1005,10 +1216,18 @@ async def _handle_delete_limit(sender_phone: str, extracted_data: dict) -> str:
                 category_name=None,
                 month=month,
                 year=year,
+                currency=currency,
             ),
         )
         return "¿Qué límite querés eliminar? Indicame la categoría."
-    result = LimitService.delete_limit(sender_phone, category_name, month=month, year=year)
+    result = await asyncio.to_thread(
+        LimitService.delete_limit,
+        sender_phone,
+        category_name,
+        month=month,
+        year=year,
+        currency=currency,
+    )
     if result.status == "needs_month_selection":
         await ConversationService.set_pending_limit_delete(
             sender_phone,
@@ -1018,7 +1237,17 @@ async def _handle_delete_limit(sender_phone: str, extracted_data: dict) -> str:
                 candidates=result.candidates,
             ),
         )
+    elif result.status == "deleted":
+        await _clear_deleted_last_limit(sender_phone, result.limit_id)
     return _limit_delete_reply(result, category_name)
+
+
+async def _clear_deleted_last_limit(sender_phone: str, deleted_limit_id: str | None) -> None:
+    if not deleted_limit_id:
+        return
+    last_limit = await ConversationService.get_last_limit(sender_phone)
+    if last_limit is not None and last_limit.limit_id == deleted_limit_id:
+        await ConversationService.clear_last_limit(sender_phone)
 
 
 # ---------------------------------------------------------------------------
@@ -1198,6 +1427,42 @@ async def process_incoming_message(
         await ConversationService.clear_state(sender_phone)
 
     # ----------------------------------------------------------
+    # Multi-turn STK-47: confirmar creación de categoría canónica
+    # ----------------------------------------------------------
+    is_awaiting_limit_category = (
+        await ConversationService.is_awaiting_limit_category_confirmation(sender_phone)
+    )
+
+    if is_awaiting_limit_category:
+        pending = await ConversationService.get_pending_limit(sender_phone)
+        if pending is None:
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text="Se perdió el contexto. Podés volver a crear el límite.",
+                service_invoked="conversation",
+            )
+        extracted_data = await LLMService.process_message(
+            text_body, context=build_user_context(sender_phone)
+        )
+        intent = extracted_data.get("intent", "out_of_scope")
+        if intent == "reject_limit" or _is_cancel_request(text_body):
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text="Listo, no creé la categoría ni el límite.",
+                service_invoked="conversation",
+            )
+        if intent == "confirm_limit" or _is_confirm_request(text_body):
+            reply_text = await _handle_create_limit(
+                sender_phone,
+                _limit_base_data(pending),
+                last_limit=_last_limit_from_pending(pending),
+                edit=pending.is_edit,
+                allow_category_creation=True,
+            )
+            return DispatchResult(reply_text=reply_text, service_invoked="conversation")
+        await ConversationService.clear_state(sender_phone)
+
+    # ----------------------------------------------------------
     # Multi-turn STK-46: completar categoría y/o monto del límite
     # ----------------------------------------------------------
     is_awaiting_limit_data = await ConversationService.is_awaiting_limit_data(sender_phone)
@@ -1251,6 +1516,12 @@ async def process_incoming_message(
             await ConversationService.clear_state(sender_phone)
             reply_text = "Se perdió el contexto de la eliminación. Volvé a indicarme qué límite querés eliminar."
         else:
+            if _is_cancel_request(text_body):
+                await ConversationService.clear_state(sender_phone)
+                return DispatchResult(
+                    reply_text="Listo, cancelé la eliminación del límite.",
+                    service_invoked="conversation",
+                )
             extracted_data = await LLMService.process_message(
                 text_body, context=build_user_context(sender_phone)
             )
@@ -1258,11 +1529,13 @@ async def process_incoming_message(
             if not category_name:
                 reply_text = "¿Qué límite querés eliminar? Indicame la categoría."
             else:
-                result = LimitService.delete_limit(
+                result = await asyncio.to_thread(
+                    LimitService.delete_limit,
                     sender_phone,
                     category_name,
                     month=pending_delete.month,
                     year=pending_delete.year,
+                    currency=pending_delete.currency,
                 )
                 if result.status == "needs_month_selection":
                     await ConversationService.set_pending_limit_delete(
@@ -1275,6 +1548,8 @@ async def process_incoming_message(
                     )
                 else:
                     await ConversationService.clear_state(sender_phone)
+                    if result.status == "deleted":
+                        await _clear_deleted_last_limit(sender_phone, result.limit_id)
                 reply_text = _limit_delete_reply(result, category_name)
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
@@ -1289,6 +1564,12 @@ async def process_incoming_message(
             await ConversationService.clear_state(sender_phone)
             reply_text = "Se perdió el contexto de la eliminación. Volvé a indicarme qué límite querés eliminar."
         else:
+            if _is_cancel_request(text_body):
+                await ConversationService.clear_state(sender_phone)
+                return DispatchResult(
+                    reply_text="Listo, cancelé la eliminación del límite.",
+                    service_invoked="conversation",
+                )
             extracted_data = await LLMService.process_message(
                 text_body, context=build_user_context(sender_phone)
             )
@@ -1301,13 +1582,43 @@ async def process_incoming_message(
                     pending_delete.candidates,
                 )
             else:
-                result = LimitService.delete_limit(
+                selected_year = extracted_data.get("limit_year")
+                selected_currency = extracted_data.get("limit_currency")
+                if isinstance(selected_currency, str):
+                    selected_currency = selected_currency.strip().upper() or None
+                matching_candidates = [
+                    candidate
+                    for candidate in pending_delete.candidates
+                    if candidate.get("month") == month
+                    and (
+                        selected_year is None
+                        or candidate.get("year") == selected_year
+                    )
+                    and (
+                        selected_currency is None
+                        or candidate.get("currency", "ARS") == selected_currency
+                    )
+                ]
+                if len(matching_candidates) != 1:
+                    reply_text = _limit_selection_reply(
+                        pending_delete.category_name,
+                        pending_delete.candidates,
+                    )
+                    return DispatchResult(
+                        reply_text=reply_text,
+                        service_invoked="conversation",
+                    )
+                result = await asyncio.to_thread(
+                    LimitService.delete_limit,
                     sender_phone,
                     pending_delete.category_name,
                     month=month,
-                    year=extracted_data.get("limit_year"),
+                    year=selected_year,
+                    currency=matching_candidates[0].get("currency"),
                 )
                 await ConversationService.clear_state(sender_phone)
+                if result.status == "deleted":
+                    await _clear_deleted_last_limit(sender_phone, result.limit_id)
                 reply_text = _limit_delete_reply(result, pending_delete.category_name)
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
@@ -1335,6 +1646,10 @@ async def process_incoming_message(
     elif intent == "delete_limit":
         reply_text = await _handle_delete_limit(sender_phone, extracted_data)
         service_invoked = "limit"
+
+    elif intent == "budget_query":
+        reply_text = await _handle_budget_query(sender_phone, extracted_data)
+        service_invoked = "budget"
 
     elif intent == "change_category":
         reply_text = await _handle_change_category(sender_phone, extracted_data)
@@ -1471,7 +1786,7 @@ async def process_incoming_message(
             reply_text = _reminder_creation_reply(reminder_result, extracted_data)
         service_invoked = "reminder"
 
-    elif intent in ("greeting", "out_of_scope", "reminder", "budget_query", "expense_summary"):
+    elif intent in ("greeting", "out_of_scope", "reminder", "expense_summary"):
         print(f"[{intent.upper()}] User {sender_phone}: {text_body}")
         reply_text = _safe_non_stk35_reply(extracted_data)
         service_invoked = "llm"
@@ -1516,7 +1831,8 @@ async def process_incoming_message(
                 service_invoked = "conversation"
             else:
                 # Sin categoría inferida, registrar directamente
-                registration_result = FinanceService.register_movement_from_whatsapp_text(
+                registration_result = await asyncio.to_thread(
+                    FinanceService.register_movement_from_whatsapp_text,
                     sender_phone=sender_phone,
                     whatsapp_message_id=whatsapp_message_id,
                     original_text=text_body,
@@ -1542,6 +1858,14 @@ async def process_incoming_message(
                     service_invoked = "conversation"
                 else:
                     reply_text = _registration_dispatch_reply(registration_result, extracted_data)
+                    if registration_result.status == "registered":
+                        evaluation = await asyncio.to_thread(
+                            BudgetService.evaluate_movement,
+                            registration_result.movement_id,
+                        )
+                        alert = _budget_alert_reply(evaluation)
+                        if alert:
+                            reply_text = f"{reply_text}\n\n{alert}"
                     service_invoked = "finance"
         elif intent in ("confirm_category", "reject_category"):
             # Estos intents no deberían llegar acá sin pending, pero por si acaso

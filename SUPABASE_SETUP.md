@@ -61,7 +61,7 @@ python -c "from app.models.database import engine, Base; Base.metadata.create_al
 
 ## Paso 5: Gestionar el esquema compartido
 
-El repositorio `blob1618/luka` es propietario de las migraciones; `blob1618/luka_frontend` consume el esquema, pero no lo administra. Las migraciones versionadas comienzan en `database/migrations/001_mvp_movimientos_financieros.sql` y la migración 003 prepara identidad, onboarding y consentimiento. Aunque todavía no hay una herramienta formal de migraciones configurada, no debe afirmarse que el proyecto carece de migraciones.
+El repositorio `blob1618/luka` es propietario de las migraciones; `blob1618/luka_frontend` consume el esquema, pero no lo administra. Las migraciones versionadas comienzan en `database/migrations/001_mvp_movimientos_financieros.sql`. La migración 003 prepara identidad, onboarding y consentimiento, y la 005 implementa el contrato de presupuestos de HU-PRE-01/STK-47. Aunque todavía no hay una herramienta formal de migraciones configurada, no debe afirmarse que el proyecto carece de migraciones.
 
 La existencia de una migración en GitHub describe el contrato esperado, pero no confirma que haya sido aplicada en Supabase. Antes de depender de una columna, tabla o índice en producción, el equipo debe verificar su aplicación mediante el proceso operativo autorizado. Después deberá generar un snapshot nuevo mediante un procedimiento controlado; el snapshot histórico no se reemplaza ni se ejecuta para este fin.
 
@@ -71,6 +71,8 @@ En particular, deben verificarse en el entorno remoto:
 - `public.movimientos_financieros` y sus índices de consulta.
 - El índice único parcial sobre `public.movimientos_financieros.whatsapp_message_id`, necesario para reforzar la deduplicación ante concurrencia.
 - RLS habilitado en `public.movimientos_financieros`, sin asumir acceso directo para roles públicos.
+- La tabla, restricciones e índices de `public.limite_categoria` definidos por la migración 005.
+- El índice parcial `movimientos_financieros_presupuesto_egresos_idx` usado para calcular consumo por categoría, moneda y período.
 - El estado previo de `acuerdo_aceptado`, la compatibilidad de los roles backend con RLS y todos los objetos de la migración 003 antes de aplicarla.
 
 Esta guía no define ni ejecuta el procedimiento de aplicación de migraciones en Supabase.
@@ -91,7 +93,7 @@ python -c "from app.models.database import SessionLocal; db = SessionLocal(); pr
    - Si se usa Docker: incluir el `Dockerfile` provisto en el repo — Render construirá la imagen automáticamente.
    - Si se usa Python (sin Docker): configurar el build command como `pip install -r requirements.txt` y el start command como:
      ```bash
-     gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT
+     gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT
      ```
 4. En el dashboard de Render, agregar las variables de entorno requeridas: `WHATSAPP_VERIFY_TOKEN`, `DATABASE_URL` y las API keys necesarias.
 5. Desplegar. Render provee un servidor persistente, por lo que el scheduler interno de la app correrá con normalidad.
@@ -102,6 +104,8 @@ python -c "from app.models.database import SessionLocal; db = SessionLocal(); pr
 - El archivo `.env` ya está en `.gitignore`
 - STK-35 requiere que el remitente ya exista en `public.usuario` con su `whatsapp_id`; no implementa alta, register, login ni vinculación inicial.
 - Las categorías no se crean automáticamente. Solo se asocia una categoría activa existente del usuario; de lo contrario, `categoria_id` queda en `null`.
+- Al crear un límite, una categoría canónica inexistente solo se crea después de una confirmación explícita del usuario.
+- El consumo presupuestario se calcula desde egresos persistidos; no se guarda como un contador separado.
 - El dashboard y el acceso mediante Magic Link corresponden a trabajo relacionado con STK-54 y no forman parte de STK-35.
 - Para el tier gratuito de Supabase: 500MB de almacenamiento, suficiente para desarrollo
 - El connection pooling está disponible con PgBouncer de Supabase (habilitarlo en Settings si se alcanzan los límites de conexiones)

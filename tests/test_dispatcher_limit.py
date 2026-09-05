@@ -37,6 +37,7 @@ def limit_flow_patches(**overrides):
         awaiting_rename=False,
         awaiting_reminder=False,
         awaiting_limit_year=False,
+        awaiting_limit_category=False,
         awaiting_limit_data=False,
         awaiting_limit_delete_category=False,
         awaiting_limit_month=False,
@@ -64,6 +65,11 @@ def limit_flow_patches(**overrides):
             return_value=defaults["awaiting_limit_year"],
         ),
         patch(
+            "app.services.dispatcher.ConversationService.is_awaiting_limit_category_confirmation",
+            new_callable=AsyncMock,
+            return_value=defaults["awaiting_limit_category"],
+        ),
+        patch(
             "app.services.dispatcher.ConversationService.is_awaiting_limit_data",
             new_callable=AsyncMock,
             return_value=defaults["awaiting_limit_data"],
@@ -85,6 +91,10 @@ def limit_flow_patches(**overrides):
         ),
         patch(
             "app.services.dispatcher._update_ultimo_mensaje",
+        ),
+        patch(
+            "app.services.dispatcher.ConversationService.clear_state",
+            new_callable=AsyncMock,
         ),
     ):
         yield
@@ -698,6 +708,54 @@ class TestLimitMultiTurn:
         assert mock_delete.call_args.kwargs["month"] == 11
 
     @pytest.mark.asyncio
+    async def test_month_selection_reasks_when_currency_is_ambiguous(self):
+        pending_delete = PendingLimitDelete(
+            sender_phone="12345",
+            category_name="Comida",
+            candidates=[
+                {
+                    "limit_id": "ars",
+                    "month": 11,
+                    "year": 2026,
+                    "amount": "400000",
+                    "currency": "ARS",
+                },
+                {
+                    "limit_id": "usd",
+                    "month": 11,
+                    "year": 2026,
+                    "amount": "500",
+                    "currency": "USD",
+                },
+            ],
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_month=True,
+                llm={
+                    "intent": "delete_limit",
+                    "limit_month": 11,
+                    "limit_year": 2026,
+                    "limit_currency": None,
+                },
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit_delete",
+                new_callable=AsyncMock,
+                return_value=pending_delete,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.delete_limit",
+            ) as delete_limit,
+        ):
+            result = await process_incoming_message("12345", "noviembre de 2026")
+
+        delete_limit.assert_not_called()
+        assert "¿A cuál te referís?" in result.reply_text
+        assert "ARS" in result.reply_text
+        assert "USD" in result.reply_text
+
+    @pytest.mark.asyncio
     async def test_awaiting_limit_month_selection_no_month_reasks(self):
         pending_delete = PendingLimitDelete(
             sender_phone="12345",
@@ -977,3 +1035,70 @@ class TestLimitMultiTurnFixes:
         assert "Registró tu límite para" in result.reply_text
         assert mock_create.call_args.kwargs["last_limit"].limit_id == "abc-123"
         assert mock_create.call_args.kwargs["last_limit"].month == 1
+
+
+class TestLimitCategoryConfirmation:
+    @pytest.mark.asyncio
+    async def test_unknown_category_is_not_created_without_confirmation(self):
+        with (
+            limit_flow_patches(),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                return_value=LimitResult(
+                    status="needs_category_confirmation",
+                    message="confirm",
+                    category_name="Ropa",
+                    amount=Decimal("300000"),
+                    month=9,
+                    year=2026,
+                    currency="ARS",
+                ),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_pending_limit",
+                new_callable=AsyncMock,
+            ) as set_pending,
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "poné un límite de 300000 para ropa",
+            )
+
+        assert "¿Querés crearla y aplicar el límite?" in result.reply_text
+        assert set_pending.await_args.kwargs["step"] == (
+            "awaiting_limit_category_confirmation"
+        )
+
+    @pytest.mark.asyncio
+    async def test_confirmation_authorizes_category_creation(self):
+        pending = PendingLimit(
+            sender_phone="12345",
+            category="Ropa",
+            amount=Decimal("300000"),
+            month=9,
+            year=2026,
+            currency="ARS",
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_category=True,
+                llm={"intent": "confirm_limit", "reply_text": "dale"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                return_value=created_result(month=9),
+            ) as create_limit,
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_limit",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "sí")
+
+        assert "Registré tu límite" in result.reply_text
+        assert create_limit.call_args.kwargs["allow_category_creation"] is True

@@ -1,6 +1,6 @@
 # Base de datos
 
-Estado del contrato de datos de LUKA después de preparar STK-143 y relación entre el código, las migraciones y Supabase.
+Estado del contrato de datos de LUKA después de implementar HU-PRE-01/STK-47 y relación entre el código, las migraciones y Supabase.
 
 ## Fuentes de verdad y alcance
 
@@ -42,6 +42,14 @@ La FK PostgreSQL `public.usuario.auth_user_id -> auth.users(id)` existe únicame
 
 `public.movimientos_financieros` es la entidad central para ingresos y egresos.
 
+## Presupuestos por categoría (HU-PRE-01 / STK-47)
+
+`public.limite_categoria` define un presupuesto mensual por usuario, categoría, período y moneda. `cantidad_max` usa `numeric(18,2)`, debe ser positiva y el período debe ser válido. La combinación `(usuario_id, categoria_id, inicio_periodo, moneda)` es única, por lo que un alta repetida actualiza el mismo presupuesto en vez de crear duplicados.
+
+El gasto consumido, disponible, exceso y porcentaje no se persisten como columnas derivadas. `BudgetService` los calcula desde los egresos de `public.movimientos_financieros` que coinciden en usuario, categoría, moneda y fecha dentro del período. Los ingresos, movimientos sin categoría, otras monedas y otros períodos no consumen el presupuesto.
+
+La migración `005_presupuesto_control_gasto.sql` agrega moneda, restricciones, unicidad e índices para límites y para la agregación de egresos. También habilita RLS en `limite_categoria` sin otorgar acceso a roles públicos. Su presencia en el repositorio no demuestra que esté aplicada en Supabase.
+
 
 ## Modelos actuales del backend
 
@@ -57,7 +65,7 @@ La FK PostgreSQL `public.usuario.auth_user_id -> auth.users(id)` existe únicame
 - `Evento` -> `evento`
 - `MovimientoFinanciero` -> `movimientos_financieros`
 
-Diagrama de las entidades que participan directamente en STK-35:
+Diagrama de las entidades financieras principales:
 
 ```mermaid
 erDiagram
@@ -89,9 +97,21 @@ erDiagram
         text whatsapp_message_id UK
     }
 
+    limite_categoria {
+        uuid id PK
+        uuid usuario_id FK
+        uuid categoria_id FK
+        numeric cantidad_max
+        text moneda
+        date inicio_periodo
+        date fin_periodo
+    }
+
     usuario ||--o{ categorias : posee
     usuario ||--o{ movimientos_financieros : registra
     categorias o|--o{ movimientos_financieros : clasifica
+    usuario ||--o{ limite_categoria : configura
+    categorias ||--o{ limite_categoria : limita
 ```
 
 Este diagrama representa el contrato del ORM, no una verificación del esquema remoto.
@@ -134,7 +154,7 @@ Hasta esa verificación, la deduplicación de aplicación reduce duplicados secu
 
 ## Migraciones y desarrollo local
 
-Sí existen migraciones SQL versionadas en GitHub dentro de `database/migrations/`. STK-143 agrega `003_onboarding_identity_consent.sql` y su rollback controlado. La migración 003 todavía no se considera aplicada: debe revisarse contra el estado y los roles reales de Supabase antes de ejecutarla.
+Sí existen migraciones SQL versionadas en GitHub dentro de `database/migrations/`. HU-PRE-01/STK-47 agrega `005_presupuesto_control_gasto.sql` y su rollback controlado. Ninguna migración nueva se considera aplicada por el solo hecho de estar versionada: debe revisarse contra el estado y los roles reales de Supabase antes de ejecutarla.
 
 Todavía no hay una herramienta formal como Alembic o Supabase CLI configurada como flujo único de aplicación. Por lo tanto:
 
@@ -160,7 +180,7 @@ Para Release 1, el acceso financiero es mediado por backend:
 
 No se permite que un dashboard consulte directamente los movimientos financieros de Supabase en esta etapa. El backend debe aplicar autorización y filtrar siempre por el usuario correspondiente.
 
-Las migraciones declaran `ENABLE ROW LEVEL SECURITY` para las tablas alcanzadas. La migración 003 lo habilita en `usuario`, `onboarding_invitacion`, `acuerdo_version` y `acuerdo_aceptado`, sin policies ni `GRANT` para `anon` o `authenticated`. El estado efectivo y la compatibilidad de los roles de conexión backend deben verificarse en Supabase antes de aplicarla.
+Las migraciones declaran `ENABLE ROW LEVEL SECURITY` para las tablas alcanzadas. La migración 003 lo habilita en `usuario`, `onboarding_invitacion`, `acuerdo_version` y `acuerdo_aceptado`; la migración 005 lo habilita en `limite_categoria`. Ninguna agrega policies ni `GRANT` para `anon` o `authenticated`. El estado efectivo y la compatibilidad de los roles de conexión backend deben verificarse en Supabase antes de aplicarlas.
 
 El rollback de la migración 003 no ejecuta `DISABLE ROW LEVEL SECURITY` sobre tablas preexistentes: deja RLS habilitado porque no puede conocer de forma segura el estado anterior y deshabilitarlo podría reducir protecciones existentes.
 

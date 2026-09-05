@@ -254,15 +254,52 @@ class LimiteCategoria(Base):
     __tablename__ = "limite_categoria"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id"), nullable=False)
-    categoria_id = Column(Uuid(as_uuid=True), ForeignKey("categorias.id"), nullable=False)
-    cantidad_max = Column(Numeric, nullable=False)
+    usuario_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("usuario.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    categoria_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("categorias.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    cantidad_max = Column(Numeric(18, 2), nullable=False)
+    moneda = Column(String(3), nullable=False, default="ARS")
     inicio_periodo = Column(Date, nullable=False)
     fin_periodo = Column(Date, nullable=False)
-    creado_en = Column(DateTime, default=datetime.utcnow)
+    creado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    actualizado_en = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        onupdate=func.now(),
+    )
 
     __table_args__ = (
-        CheckConstraint('cantidad_max > 0', name='limite_categoria_cantidad_max_check'),
+        CheckConstraint("cantidad_max > 0", name="limite_categoria_cantidad_max_check"),
+        CheckConstraint(
+            "length(moneda) = 3 AND moneda = upper(moneda)",
+            name="limite_categoria_moneda_check",
+        ),
+        CheckConstraint(
+            "inicio_periodo <= fin_periodo",
+            name="limite_categoria_periodo_check",
+        ),
+        UniqueConstraint(
+            "usuario_id",
+            "categoria_id",
+            "inicio_periodo",
+            "moneda",
+            name="limite_categoria_usuario_categoria_periodo_moneda_key",
+        ),
+        Index(
+            "limite_categoria_usuario_vigencia_idx",
+            "usuario_id",
+            "fin_periodo",
+            "inicio_periodo",
+        ),
+        Index("limite_categoria_categoria_id_idx", "categoria_id"),
     )
 
 class Recordatorio(Base):
@@ -321,5 +358,14 @@ class MovimientoFinanciero(Base):
             unique=True,
             postgresql_where=whatsapp_message_id.isnot(None),
             sqlite_where=whatsapp_message_id.isnot(None),
+        ),
+        Index(
+            "movimientos_financieros_presupuesto_egresos_idx",
+            "usuario_id",
+            "categoria_id",
+            "moneda",
+            "fecha_movimiento",
+            postgresql_where=(tipo == "egreso") & categoria_id.isnot(None),
+            sqlite_where=(tipo == "egreso") & categoria_id.isnot(None),
         ),
     )

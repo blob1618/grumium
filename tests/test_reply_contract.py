@@ -23,6 +23,21 @@ from app.services.reminder import ReminderListResult, ReminderResult
 LLM_CANNED_REPLY = "Estoy procesando el movimiento."
 
 
+@pytest.fixture(autouse=True)
+def no_pending_limit_flows(monkeypatch):
+    for method in (
+        "is_awaiting_limit_year_confirmation",
+        "is_awaiting_limit_category_confirmation",
+        "is_awaiting_limit_data",
+        "is_awaiting_limit_delete_category",
+        "is_awaiting_limit_month_selection",
+    ):
+        monkeypatch.setattr(
+            f"app.services.dispatcher.ConversationService.{method}",
+            AsyncMock(return_value=False),
+        )
+
+
 class LastMovementFake:
     movement_id = "m1"
     sender_phone = "5491100000001"

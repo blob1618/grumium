@@ -24,6 +24,24 @@ from app.models.database import (
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def no_pending_conversation_flows(monkeypatch):
+    for method in (
+        "is_awaiting_category_confirmation",
+        "is_awaiting_rename",
+        "is_awaiting_reminder_data",
+        "is_awaiting_limit_year_confirmation",
+        "is_awaiting_limit_category_confirmation",
+        "is_awaiting_limit_data",
+        "is_awaiting_limit_delete_category",
+        "is_awaiting_limit_month_selection",
+    ):
+        monkeypatch.setattr(
+            f"app.services.dispatcher.ConversationService.{method}",
+            AsyncMock(return_value=False),
+        )
+
+
 @pytest.fixture()
 def db_context(monkeypatch):
     engine = create_engine(
