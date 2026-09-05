@@ -88,7 +88,7 @@ def limit_flow_patches(**overrides):
             "app.services.dispatcher.LLMService.process_message",
             new_callable=AsyncMock,
             return_value=defaults["llm"],
-        ),
+        ) as mock_llm,
         patch(
             "app.services.dispatcher._update_ultimo_mensaje",
         ),
@@ -97,7 +97,7 @@ def limit_flow_patches(**overrides):
             new_callable=AsyncMock,
         ),
     ):
-        yield
+        yield {"llm": mock_llm}
 
 
 def created_result(**overrides):
@@ -564,7 +564,7 @@ class TestLimitMultiTurn:
             limit_flow_patches(
                 awaiting_limit_year=True,
                 llm={"intent": "greeting", "reply_text": "hola"},
-            ),
+            ) as mocks,
             patch(
                 "app.services.dispatcher.ConversationService.get_pending_limit",
                 new_callable=AsyncMock,
@@ -579,6 +579,7 @@ class TestLimitMultiTurn:
 
         assert "¿Quieres crear un límite de gastos para Enero de 2027?" not in result.reply_text
         assert result.service_invoked == "llm"
+        mocks["llm"].assert_awaited_once()
         mock_clear.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1102,3 +1103,73 @@ class TestLimitCategoryConfirmation:
 
         assert "Registré tu límite" in result.reply_text
         assert create_limit.call_args.kwargs["allow_category_creation"] is True
+
+    @pytest.mark.asyncio
+    async def test_unrelated_message_falls_through_with_one_llm_call(self):
+        pending = PendingLimit(
+            sender_phone="12345",
+            category="Ropa",
+            amount=Decimal("300000"),
+            month=9,
+            year=2026,
+            currency="ARS",
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_category=True,
+                llm={"intent": "greeting", "reply_text": "hola"},
+            ) as mocks,
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+        ):
+            result = await process_incoming_message("12345", "hola, otra consulta")
+
+        assert result.reply_text == "hola"
+        assert result.service_invoked == "llm"
+        mocks["llm"].assert_awaited_once()
+        mock_clear.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_llm_error_preserves_pending_confirmation(self):
+        pending = PendingLimit(
+            sender_phone="12345",
+            category="Ropa",
+            amount=Decimal("300000"),
+            month=9,
+            year=2026,
+            currency="ARS",
+        )
+        llm_error = {
+            "intent": "out_of_scope",
+            "reply_text": "No he podido analizar tu mensaje en este momento.",
+            "error": "HTTPStatusError: 429 Too Many Requests",
+        }
+        with (
+            limit_flow_patches(
+                awaiting_limit_category=True,
+                llm=llm_error,
+            ) as mocks,
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+        ):
+            result = await process_incoming_message("12345", "quizás")
+
+        assert result.reply_text == llm_error["reply_text"]
+        assert result.raw_llm_response == llm_error
+        assert result.service_invoked == "llm"
+        mocks["llm"].assert_awaited_once()
+        mock_clear.assert_not_awaited()

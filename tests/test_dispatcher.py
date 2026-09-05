@@ -1116,12 +1116,12 @@ class TestCreateReminder:
 
 
 # ---------------------------------------------------------------------------
-# Legacy fallback branch
+# Unknown-intent fallback
 # ---------------------------------------------------------------------------
 
-class TestLegacyBranch:
+class TestUnknownIntentFallback:
     @pytest.mark.asyncio
-    async def test_unknown_intent_legacy_registers_movement(self):
+    async def test_unknown_intent_is_not_reclassified(self):
         llm_result = {
             "intent": "some_unknown_intent",
             "reply_text": "legacy",
@@ -1145,12 +1145,12 @@ class TestLegacyBranch:
             patch(
                 "app.services.dispatcher.LLMService.process_message",
                 new_callable=AsyncMock,
-                side_effect=[llm_result, movement_llm_result(category=None)],
-            ),
+                return_value=llm_result,
+            ) as mock_llm,
             patch(
                 "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
                 return_value=registered_result(),
-            ),
+            ) as mock_register,
             patch(
                 "app.services.dispatcher.ConversationService.set_last_movement",
                 new_callable=AsyncMock,
@@ -1161,11 +1161,13 @@ class TestLegacyBranch:
         ):
             result = await process_incoming_message("12345", "Gasté 5000 en supermercado")
 
-        assert result.service_invoked == "finance"
-        assert "5000" in result.reply_text
+        assert result.service_invoked == "llm"
+        assert result.reply_text == "legacy"
+        mock_llm.assert_awaited_once()
+        mock_register.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_legacy_fallback_safe_reply(self):
+    async def test_unknown_intent_uses_safe_reply(self):
         llm_result = {"intent": "unknown_thing", "reply_text": ""}
 
         with (
@@ -1186,8 +1188,8 @@ class TestLegacyBranch:
             patch(
                 "app.services.dispatcher.LLMService.process_message",
                 new_callable=AsyncMock,
-                side_effect=[llm_result, greeting_llm_result()],
-            ),
+                return_value=llm_result,
+            ) as mock_llm,
             patch(
                 "app.services.dispatcher._update_ultimo_mensaje",
             ),
@@ -1195,6 +1197,7 @@ class TestLegacyBranch:
             result = await process_incoming_message("12345", "xyz")
 
         assert result.reply_text
+        mock_llm.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1370,14 +1373,13 @@ class TestReminderMultiTurnMore:
 
 
 # ---------------------------------------------------------------------------
-# Legacy branch extra paths
+# Single-pass dispatcher paths
 # ---------------------------------------------------------------------------
 
-class TestLegacyBranchMore:
+class TestSinglePassDispatcher:
     @pytest.mark.asyncio
-    async def test_legacy_delete_category(self):
-        llm_first = {"intent": "unknown_intent", "reply_text": ""}
-        llm_second = {"intent": "delete_category", "category": "Comida", "reply_text": ""}
+    async def test_delete_category_uses_one_classification(self):
+        llm_result = {"intent": "delete_category", "category": "Comida", "reply_text": ""}
 
         with (
             patch(
@@ -1397,8 +1399,8 @@ class TestLegacyBranchMore:
             patch(
                 "app.services.dispatcher.LLMService.process_message",
                 new_callable=AsyncMock,
-                side_effect=[llm_first, llm_second],
-            ),
+                return_value=llm_result,
+            ) as mock_llm,
             patch(
                 "app.services.dispatcher._handle_delete_category",
                 new_callable=AsyncMock,
@@ -1411,11 +1413,11 @@ class TestLegacyBranchMore:
             result = await process_incoming_message("12345", "borrá comida")
 
         assert result.service_invoked == "finance"
+        mock_llm.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_legacy_list_categories(self):
-        llm_first = {"intent": "unknown_intent", "reply_text": ""}
-        llm_second = {"intent": "list_categories", "reply_text": ""}
+    async def test_list_categories_uses_one_classification(self):
+        llm_result = {"intent": "list_categories", "reply_text": ""}
 
         with (
             patch(
@@ -1435,8 +1437,8 @@ class TestLegacyBranchMore:
             patch(
                 "app.services.dispatcher.LLMService.process_message",
                 new_callable=AsyncMock,
-                side_effect=[llm_first, llm_second],
-            ),
+                return_value=llm_result,
+            ) as mock_llm,
             patch(
                 "app.services.dispatcher._handle_list_categories",
                 new_callable=AsyncMock,
@@ -1449,11 +1451,11 @@ class TestLegacyBranchMore:
             result = await process_incoming_message("12345", "mis categorías")
 
         assert result.service_invoked == "finance"
+        mock_llm.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_legacy_confirm_category(self):
-        llm_first = {"intent": "unknown_intent", "reply_text": ""}
-        llm_second = {"intent": "confirm_category", "reply_text": ""}
+    async def test_confirm_category_without_pending_uses_one_classification(self):
+        llm_result = {"intent": "confirm_category", "reply_text": ""}
 
         with (
             patch(
@@ -1473,8 +1475,8 @@ class TestLegacyBranchMore:
             patch(
                 "app.services.dispatcher.LLMService.process_message",
                 new_callable=AsyncMock,
-                side_effect=[llm_first, llm_second],
-            ),
+                return_value=llm_result,
+            ) as mock_llm,
             patch(
                 "app.services.dispatcher._update_ultimo_mensaje",
             ),
@@ -1483,11 +1485,11 @@ class TestLegacyBranchMore:
 
         assert result.service_invoked == "conversation"
         assert "pendiente" in result.reply_text.lower()
+        mock_llm.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_legacy_movement_with_category_sets_pending(self):
-        llm_first = {"intent": "unknown_intent", "reply_text": ""}
-        llm_second = movement_llm_result(category="Comida")
+    async def test_unknown_intent_does_not_enter_a_second_movement_path(self):
+        llm_result = {"intent": "unknown_intent", "reply_text": "no entendido"}
 
         with (
             patch(
@@ -1507,8 +1509,8 @@ class TestLegacyBranchMore:
             patch(
                 "app.services.dispatcher.LLMService.process_message",
                 new_callable=AsyncMock,
-                side_effect=[llm_first, llm_second],
-            ),
+                return_value=llm_result,
+            ) as mock_llm,
             patch(
                 "app.services.dispatcher.ConversationService.set_pending_movement",
                 new_callable=AsyncMock,
@@ -1519,9 +1521,10 @@ class TestLegacyBranchMore:
         ):
             result = await process_incoming_message("12345", "Gasté 5000", "wamid.9")
 
-        assert result.service_invoked == "conversation"
-        assert "categoría" in result.reply_text.lower()
-        mock_pending.assert_awaited_once()
+        assert result.service_invoked == "llm"
+        assert result.reply_text == "no entendido"
+        mock_llm.assert_awaited_once()
+        mock_pending.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

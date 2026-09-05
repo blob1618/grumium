@@ -1316,6 +1316,20 @@ async def process_incoming_message(
     # Track last message time for 24h window
     _update_ultimo_mensaje(sender_phone)
 
+    # Un mensaje puede abandonar un flujo multi-turno y continuar por el
+    # dispatcher general. Memorizar la clasificación garantiza que ese
+    # fall-through no vuelva a facturar ni reintentar el mismo mensaje.
+    llm_result_cache: dict | None = None
+
+    async def extract_message_once() -> dict:
+        nonlocal llm_result_cache
+        if llm_result_cache is None:
+            llm_result_cache = await LLMService.process_message(
+                text_body,
+                context=build_user_context(sender_phone),
+            )
+        return llm_result_cache
+
     # ----------------------------------------------------------
     # Multi-turn: renombrar recordatorio por título duplicado
     # ----------------------------------------------------------
@@ -1358,9 +1372,7 @@ async def process_incoming_message(
             reply_text = "Se perdió el contexto. Podés volver a crear el recordatorio."
         else:
             # Extraer día del texto usando LLM
-            extracted_data = await LLMService.process_message(
-                text_body, context=build_user_context(sender_phone)
-            )
+            extracted_data = await extract_message_once()
             new_day = extracted_data.get("reminder_day")
             # Fallback: extraer número del texto
             if new_day is None:
@@ -1401,9 +1413,16 @@ async def process_incoming_message(
                 reply_text="Se perdió el contexto. Podés volver a crear el límite.",
                 service_invoked="conversation",
             )
-        extracted_data = await LLMService.process_message(
-            text_body, context=build_user_context(sender_phone)
-        )
+        extracted_data = await extract_message_once()
+        if extracted_data.get("error"):
+            return DispatchResult(
+                reply_text=extracted_data.get("reply_text") or (
+                    "No he podido analizar tu mensaje en este momento."
+                ),
+                raw_llm_response=extracted_data,
+                service_invoked="llm",
+                intent=extracted_data.get("intent", "out_of_scope"),
+            )
         intent = extracted_data.get("intent", "out_of_scope")
         if intent == "reject_limit" or _is_cancel_request(text_body):
             await ConversationService.clear_state(sender_phone)
@@ -1441,9 +1460,16 @@ async def process_incoming_message(
                 reply_text="Se perdió el contexto. Podés volver a crear el límite.",
                 service_invoked="conversation",
             )
-        extracted_data = await LLMService.process_message(
-            text_body, context=build_user_context(sender_phone)
-        )
+        extracted_data = await extract_message_once()
+        if extracted_data.get("error"):
+            return DispatchResult(
+                reply_text=extracted_data.get("reply_text") or (
+                    "No he podido analizar tu mensaje en este momento."
+                ),
+                raw_llm_response=extracted_data,
+                service_invoked="llm",
+                intent=extracted_data.get("intent", "out_of_scope"),
+            )
         intent = extracted_data.get("intent", "out_of_scope")
         if intent == "reject_limit" or _is_cancel_request(text_body):
             await ConversationService.clear_state(sender_phone)
@@ -1473,9 +1499,7 @@ async def process_incoming_message(
             await ConversationService.clear_state(sender_phone)
             reply_text = "Se perdió el contexto. Podés volver a crear el límite."
         else:
-            extracted_data = await LLMService.process_message(
-                text_body, context=build_user_context(sender_phone)
-            )
+            extracted_data = await extract_message_once()
             intent = extracted_data.get("intent", "out_of_scope")
 
             if intent == "reject_limit" or _is_cancel_request(text_body):
@@ -1522,9 +1546,7 @@ async def process_incoming_message(
                     reply_text="Listo, cancelé la eliminación del límite.",
                     service_invoked="conversation",
                 )
-            extracted_data = await LLMService.process_message(
-                text_body, context=build_user_context(sender_phone)
-            )
+            extracted_data = await extract_message_once()
             category_name = extracted_data.get("limit_category") or _extract_category_from_text(text_body)
             if not category_name:
                 reply_text = "¿Qué límite querés eliminar? Indicame la categoría."
@@ -1570,9 +1592,7 @@ async def process_incoming_message(
                     reply_text="Listo, cancelé la eliminación del límite.",
                     service_invoked="conversation",
                 )
-            extracted_data = await LLMService.process_message(
-                text_body, context=build_user_context(sender_phone)
-            )
+            extracted_data = await extract_message_once()
             month = extracted_data.get("limit_month")
             if month is None:
                 month = _extract_month_from_text(text_body)
@@ -1623,9 +1643,7 @@ async def process_incoming_message(
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
     # Procesar mensaje con LLM (fecha + categorías del usuario como contexto)
-    extracted_data = await LLMService.process_message(
-        text_body, context=build_user_context(sender_phone)
-    )
+    extracted_data = await extract_message_once()
     intent = extracted_data.get("intent", "out_of_scope")
 
     # ----------------------------------------------------------
@@ -1786,96 +1804,19 @@ async def process_incoming_message(
             reply_text = _reminder_creation_reply(reminder_result, extracted_data)
         service_invoked = "reminder"
 
+    elif intent in ("confirm_category", "reject_category"):
+        reply_text = "No encontré un movimiento pendiente para confirmar."
+        service_invoked = "conversation"
+
     elif intent in ("greeting", "out_of_scope", "reminder", "expense_summary"):
         print(f"[{intent.upper()}] User {sender_phone}: {text_body}")
         reply_text = _safe_non_stk35_reply(extracted_data)
         service_invoked = "llm"
 
     else:
-        # No hay conversación pendiente, procesar normalmente
-        extracted_data = await LLMService.process_message(
-            text_body, context=build_user_context(sender_phone)
-        )
-        intent = extracted_data.get("intent", "out_of_scope")
-
-        # ----------------------------------------------------------
-        # STK-39: Manejar intents de gestión de categorías
-        # ----------------------------------------------------------
-        if intent == "delete_category":
-            reply_text = await _handle_delete_category(sender_phone, extracted_data)
-            service_invoked = "finance"
-        elif intent == "list_categories":
-            reply_text = await _handle_list_categories(sender_phone)
-            service_invoked = "finance"
-        elif _is_financial_movement(extracted_data):
-            # Movimiento financiero: ver si tiene categoría inferida
-            category_name = extracted_data.get("category")
-
-            if category_name:
-                # Guardar movimiento como pendiente para confirmar categoría
-                pending = PendingMovement(
-                    sender_phone=sender_phone,
-                    whatsapp_message_id=whatsapp_message_id,
-                    original_text=text_body,
-                    movement_type=extracted_data.get("movement_type", "egreso"),
-                    amount=Decimal(str(extracted_data.get("amount") or 0)),
-                    currency=extracted_data.get("currency", "ARS"),
-                    description=_movement_description(extracted_data),
-                    inferred_category=category_name,
-                    llm_result_extra=extracted_data,
-                )
-                await ConversationService.set_pending_movement(
-                    sender_phone, pending
-                )
-                reply_text = _category_confirmation_reply(category_name)
-                service_invoked = "conversation"
-            else:
-                # Sin categoría inferida, registrar directamente
-                registration_result = await asyncio.to_thread(
-                    FinanceService.register_movement_from_whatsapp_text,
-                    sender_phone=sender_phone,
-                    whatsapp_message_id=whatsapp_message_id,
-                    original_text=text_body,
-                    llm_result=extracted_data,
-                    fecha_movimiento=resolve_relative_date(
-                        extracted_data.get("fecha"), date.today()  # noqa: DTZ011
-                    ),
-                )
-                print(
-                    "[MOVEMENT_REGISTRATION]",
-                    f"user={sender_phone}",
-                    f"message_id={whatsapp_message_id}",
-                    f"status={registration_result.status}",
-                )
-                if registration_result.status == "needs_category_confirmation":
-                    reply_text = _route_needs_category_confirmation(
-                        sender_phone,
-                        whatsapp_message_id,
-                        text_body,
-                        extracted_data,
-                        registration_result.category_name,
-                    )
-                    service_invoked = "conversation"
-                else:
-                    reply_text = _registration_dispatch_reply(registration_result, extracted_data)
-                    if registration_result.status == "registered":
-                        evaluation = await asyncio.to_thread(
-                            BudgetService.evaluate_movement,
-                            registration_result.movement_id,
-                        )
-                        alert = _budget_alert_reply(evaluation)
-                        if alert:
-                            reply_text = f"{reply_text}\n\n{alert}"
-                    service_invoked = "finance"
-        elif intent in ("confirm_category", "reject_category"):
-            # Estos intents no deberían llegar acá sin pending, pero por si acaso
-            reply_text = "No encontré un movimiento pendiente para confirmar."
-            service_invoked = "conversation"
-        else:
-            intent_str = extracted_data.get("intent", "out_of_scope")
-            print(f"[{str(intent_str).upper()}] User {sender_phone}: {text_body}")
-            reply_text = _safe_non_stk35_reply(extracted_data)
-            service_invoked = "llm"
+        print(f"[{str(intent).upper()}] User {sender_phone}: {text_body}")
+        reply_text = _safe_non_stk35_reply(extracted_data)
+        service_invoked = "llm"
 
     return DispatchResult(
         reply_text=reply_text,
