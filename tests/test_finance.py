@@ -1,4 +1,5 @@
 import uuid
+from datetime import date
 
 import pytest
 from sqlalchemy import create_engine
@@ -7,7 +8,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.services.finance as finance_module
-from app.models.database import Base, Categoria, MovimientoFinanciero, Usuario
+from app.models.database import (
+    Base,
+    Categoria,
+    LimiteCategoria,
+    MovimientoFinanciero,
+    Usuario,
+)
 from app.services.finance import FinanceService
 
 
@@ -488,17 +495,6 @@ def test_register_movement_integrity_error_rechecks_and_returns_persistence_erro
     assert fake_session.closed is True
 
 
-def test_check_dynamic_budget():
-    user_id = 1
-    new_expense = 5000.0
-    category = "ocio"
-
-    result = FinanceService.check_dynamic_budget(user_id, new_expense, category)
-
-    assert "buen registro" in result.lower()
-    assert "ropa" in result.lower()
-
-
 def test_generate_expense_chart():
     expenses = {
         "Comida": 15000.0,
@@ -623,6 +619,28 @@ def test_delete_category_sets_movements_to_null(db_context):
 
     session.refresh(mov)
     assert mov.categoria_id is None
+
+
+def test_delete_category_removes_associated_limits(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    category = create_category(session, user.id, nombre="Comida")
+    session.add(
+        LimiteCategoria(
+            usuario_id=user.id,
+            categoria_id=category.id,
+            cantidad_max=10000,
+            moneda="ARS",
+            inicio_periodo=date(2026, 9, 1),
+            fin_periodo=date(2026, 9, 30),
+        )
+    )
+    session.commit()
+
+    result = FinanceService.delete_category(user.id, "Comida")
+
+    assert result.status == "deleted"
+    assert session.query(LimiteCategoria).count() == 0
 
 
 def test_get_categories_with_totals_empty(db_context):
@@ -873,3 +891,30 @@ def test_update_movement_category_case_insensitive(db_context):
     assert result.status == "updated"
     session.refresh(mov)
     assert mov.categoria_id == cat2.id
+
+
+def test_update_movement_category_missing_without_create(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    category = create_category(session, user.id, nombre="Comida")
+    movement = MovimientoFinanciero(
+        usuario_id=user.id,
+        categoria_id=category.id,
+        tipo="egreso",
+        cantidad=1500,
+        moneda="ARS",
+        descripcion="almuerzo",
+    )
+    session.add(movement)
+    session.commit()
+
+    result = FinanceService.update_movement_category(
+        movement_id=str(movement.id),
+        user_id=user.id,
+        new_category_name="Inexistente",
+        create_if_missing=False,
+    )
+
+    assert result.status == "category_not_found"
+    session.refresh(movement)
+    assert movement.categoria_id == category.id

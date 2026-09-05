@@ -12,6 +12,23 @@ from app.services.onboarding import OnboardingDecision, OnboardingResult, Onboar
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def no_pending_conversation_flows(monkeypatch):
+    for method in (
+        "is_awaiting_rename",
+        "is_awaiting_reminder_data",
+        "is_awaiting_limit_year_confirmation",
+        "is_awaiting_limit_category_confirmation",
+        "is_awaiting_limit_data",
+        "is_awaiting_limit_delete_category",
+        "is_awaiting_limit_month_selection",
+    ):
+        monkeypatch.setattr(
+            f"app.services.dispatcher.ConversationService.{method}",
+            AsyncMock(return_value=False),
+        )
+
+
 def make_text_message(body="Gaste 5000 en supermercado"):
     return {
         "from": "12345",
@@ -278,7 +295,7 @@ def test_handle_webhook_out_of_scope_does_not_call_finance_service():
 
 
 def test_handle_webhook_unavailable_intents_do_not_call_finance_service():
-    for intent in ("reminder", "budget_query", "expense_summary"):
+    for intent in ("reminder", "expense_summary"):
         llm_result = {
             "intent": intent,
             "reply_text": "✅ Acción realizada",
@@ -398,11 +415,20 @@ def test_handle_webhook_budget_query_with_accidental_movement_type_does_not_call
         "reply_text": "Te queda presupuesto",
     }
 
-    _, _, register_movement, send_message = post_webhook_with_mocks(llm_result=llm_result)
+    with patch(
+        "app.services.dispatcher._handle_budget_query",
+        new_callable=AsyncMock,
+        return_value="📊 Comida: te quedan $5000 ARS.",
+    ) as budget_query:
+        _, _, register_movement, send_message = post_webhook_with_mocks(
+            llm_result=llm_result
+        )
 
     register_movement.assert_not_called()
+    budget_query.assert_awaited_once()
     sent_text = send_message.await_args.args[1]
-    assert sent_text == "Te queda presupuesto"
+    assert sent_text == "📊 Comida: te quedan $5000 ARS."
+    assert sent_text != llm_result["reply_text"]
 
 
 def test_handle_webhook_not_a_movement_uses_backend_safe_text():

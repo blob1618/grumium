@@ -25,6 +25,7 @@ class TestPendingLimitSerialization:
             amount=Decimal("300000"),
             month=7,
             year=2026,
+            currency="USD",
             is_edit=False,
         )
         restored = PendingLimit.from_dict(pending.to_dict())
@@ -33,6 +34,7 @@ class TestPendingLimitSerialization:
         assert restored.amount == Decimal("300000")
         assert restored.month == 7
         assert restored.year == 2026
+        assert restored.currency == "USD"
         assert restored.is_edit is False
 
     def test_none_fields(self):
@@ -70,6 +72,7 @@ class TestLastCreatedLimitSerialization:
             amount=Decimal("300000"),
             month=7,
             year=2026,
+            currency="USD",
         )
         restored = LastCreatedLimit.from_dict(limit.to_dict())
         assert restored.limit_id == "abc-123"
@@ -77,6 +80,7 @@ class TestLastCreatedLimitSerialization:
         assert restored.amount == Decimal("300000")
         assert restored.month == 7
         assert restored.year == 2026
+        assert restored.currency == "USD"
 
 
 class TestPendingLimitDeleteSerialization:
@@ -209,6 +213,25 @@ async def test_is_awaiting_limit_data(mock_redis):
     assert not await ConversationService.is_awaiting_limit_data(phone)
     await ConversationService.set_pending_limit(phone, pending, step="awaiting_limit_data")
     assert await ConversationService.is_awaiting_limit_data(phone)
+
+
+@pytest.mark.asyncio
+async def test_is_awaiting_limit_category_confirmation(mock_redis):
+    phone = "5491100002223"
+    pending = PendingLimit(
+        sender_phone=phone,
+        category="Ropa",
+        amount=Decimal("1000"),
+        month=9,
+        year=2026,
+    )
+    await ConversationService.set_pending_limit(
+        phone,
+        pending,
+        step="awaiting_limit_category_confirmation",
+    )
+
+    assert await ConversationService.is_awaiting_limit_category_confirmation(phone)
 
 
 @pytest.mark.asyncio

@@ -89,7 +89,8 @@ def limit_data(**overrides):
 class TestCreateLimit:
     def test_create_without_month_uses_current_month(self, db_context):
         session = db_context["session"]
-        create_user(session)
+        user = create_user(session)
+        create_category(session, user.id)
 
         result = LimitService.create_limit(
             "5491111111111", limit_data(), today=TODAY
@@ -105,7 +106,8 @@ class TestCreateLimit:
 
     def test_create_with_explicit_future_month(self, db_context):
         session = db_context["session"]
-        create_user(session)
+        user = create_user(session)
+        create_category(session, user.id)
 
         result = LimitService.create_limit(
             "5491111111111",
@@ -132,7 +134,7 @@ class TestCreateLimit:
         assert result.proposed_year == 2027
         assert session.query(LimiteCategoria).count() == 0
 
-    def test_create_past_month_with_explicit_year_not_confirmed(self, db_context):
+    def test_create_expired_explicit_period_is_rejected(self, db_context):
         session = db_context["session"]
         create_user(session)
 
@@ -142,8 +144,8 @@ class TestCreateLimit:
             today=TODAY,
         )
 
-        assert result.status == "created"
-        assert result.year == 2025
+        assert result.status == "expired_period"
+        assert session.query(LimiteCategoria).count() == 0
 
     def test_create_missing_amount(self, db_context):
         session = db_context["session"]
@@ -180,7 +182,7 @@ class TestCreateLimit:
         assert result.status == "user_not_found"
         assert session.query(LimiteCategoria).count() == 0
 
-    def test_create_creates_missing_category(self, db_context):
+    def test_create_missing_category_requires_confirmation(self, db_context):
         session = db_context["session"]
         user = create_user(session)
 
@@ -188,6 +190,17 @@ class TestCreateLimit:
             "5491111111111",
             limit_data(limit_category="Ropa"),
             today=TODAY,
+        )
+
+        assert result.status == "needs_category_confirmation"
+        assert result.category_name == "Ropa"
+        assert session.query(Categoria).count() == 0
+
+        result = LimitService.create_limit(
+            "5491111111111",
+            limit_data(limit_category="Ropa"),
+            today=TODAY,
+            allow_category_creation=True,
         )
 
         assert result.status == "created"
@@ -211,7 +224,8 @@ class TestCreateLimit:
 
     def test_create_upserts_same_category_and_month(self, db_context):
         session = db_context["session"]
-        create_user(session)
+        user = create_user(session)
+        create_category(session, user.id)
 
         first = LimitService.create_limit(
             "5491111111111", limit_data(), today=TODAY
@@ -228,9 +242,10 @@ class TestCreateLimit:
         assert session.query(LimiteCategoria).count() == 1
         assert session.query(LimiteCategoria).one().cantidad_max == Decimal("500000")
 
-    def test_create_edit_with_last_limit(self, db_context):
+    def test_edit_with_stale_last_limit_is_rejected(self, db_context):
         session = db_context["session"]
-        create_user(session)
+        user = create_user(session)
+        create_category(session, user.id, nombre="Ropa")
 
         class LastLimit:
             limit_id = "x"
@@ -247,11 +262,8 @@ class TestCreateLimit:
             today=TODAY,
         )
 
-        assert result.status == "created"
-        assert result.month == 8
-        assert result.year == 2026
-        assert result.category_name == "Ropa"
-        assert result.amount == Decimal("300000")
+        assert result.status == "stale_context"
+        assert session.query(LimiteCategoria).count() == 0
 
     def test_create_invalid_amount_becomes_needs_amount(self, db_context):
         session = db_context["session"]
@@ -284,7 +296,8 @@ class TestCreateLimitEditByLastLimit:
     def test_change_month_edits_existing_record_not_creates_new(self, db_context):
         """Flujo 2: 'cambia el mes por agosto' debe mover el límite existente."""
         session = db_context["session"]
-        create_user(session)
+        user = create_user(session)
+        create_category(session, user.id)
         LimitService.create_limit(
             "5491111111111",
             limit_data(limit_month=9, limit_year=2026),
@@ -312,7 +325,8 @@ class TestCreateLimitEditByLastLimit:
 
     def test_change_amount_edits_existing_record(self, db_context):
         session = db_context["session"]
-        create_user(session)
+        user = create_user(session)
+        create_category(session, user.id)
         LimitService.create_limit(
             "5491111111111",
             limit_data(),
@@ -337,7 +351,8 @@ class TestCreateLimitEditByLastLimit:
     def test_edit_year_confirmation_preserves_id(self, db_context):
         """Editar a un mes pasado propone el año siguiente conservando el target."""
         session = db_context["session"]
-        create_user(session)
+        user = create_user(session)
+        create_category(session, user.id)
         LimitService.create_limit(
             "5491111111111",
             limit_data(limit_month=9, limit_year=2026),
@@ -475,3 +490,99 @@ class TestDeleteLimit:
         )
 
         assert result.status == "user_not_found"
+
+
+class TestLimitValidationAndConcurrencyContract:
+    def test_year_without_month_requests_month(self, db_context):
+        session = db_context["session"]
+        user = create_user(session)
+        create_category(session, user.id)
+
+        result = LimitService.create_limit(
+            "5491111111111",
+            limit_data(limit_year=2027),
+            today=TODAY,
+        )
+
+        assert result.status == "needs_month"
+
+    def test_invalid_currency_is_rejected(self, db_context):
+        session = db_context["session"]
+        user = create_user(session)
+        create_category(session, user.id)
+
+        result = LimitService.create_limit(
+            "5491111111111",
+            limit_data(limit_currency="pesos"),
+            today=TODAY,
+        )
+
+        assert result.status == "invalid_currency"
+
+    def test_same_period_supports_separate_currencies(self, db_context):
+        session = db_context["session"]
+        user = create_user(session)
+        create_category(session, user.id)
+
+        ars = LimitService.create_limit(
+            "5491111111111",
+            limit_data(limit_currency="ARS"),
+            today=TODAY,
+        )
+        usd = LimitService.create_limit(
+            "5491111111111",
+            limit_data(limit_currency="usd"),
+            today=TODAY,
+        )
+
+        assert ars.status == "created"
+        assert usd.status == "created"
+        assert usd.currency == "USD"
+        assert session.query(LimiteCategoria).count() == 2
+
+    def test_delete_with_wrong_explicit_year_does_not_fallback(self, db_context):
+        session = db_context["session"]
+        user = create_user(session)
+        category = create_category(session, user.id)
+        create_limit(session, user.id, category.id, 300000, 11, 2026)
+
+        result = LimitService.delete_limit(
+            "5491111111111",
+            "Comida",
+            month=11,
+            year=2027,
+            today=TODAY,
+        )
+
+        assert result.status == "not_found"
+        assert session.query(LimiteCategoria).count() == 1
+
+    def test_edit_collision_is_reported(self, db_context):
+        session = db_context["session"]
+        user = create_user(session)
+        category = create_category(session, user.id)
+        july = create_limit(session, user.id, category.id, 300000, 7, 2026)
+        create_limit(session, user.id, category.id, 400000, 8, 2026)
+        last_limit = type(
+            "LastLimit",
+            (),
+            {
+                "limit_id": str(july.id),
+                "sender_phone": "5491111111111",
+                "category_name": "Comida",
+                "amount": july.cantidad_max,
+                "month": 7,
+                "year": 2026,
+                "currency": "ARS",
+            },
+        )()
+
+        result = LimitService.create_limit(
+            "5491111111111",
+            {"limit_month": 8, "limit_year": 2026},
+            last_limit=last_limit,
+            today=TODAY,
+        )
+
+        assert result.status == "conflict"
+        assert session.query(LimiteCategoria).count() == 2

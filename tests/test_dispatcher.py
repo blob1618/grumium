@@ -16,6 +16,21 @@ from app.services.onboarding import OnboardingDecision, OnboardingResult
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+@pytest.fixture(autouse=True)
+def no_pending_limit_flows(monkeypatch):
+    for method in (
+        "is_awaiting_limit_year_confirmation",
+        "is_awaiting_limit_category_confirmation",
+        "is_awaiting_limit_data",
+        "is_awaiting_limit_delete_category",
+        "is_awaiting_limit_month_selection",
+    ):
+        monkeypatch.setattr(
+            f"app.services.dispatcher.ConversationService.{method}",
+            AsyncMock(return_value=False),
+        )
+
 def known_user():
     return OnboardingResult(OnboardingDecision.KNOWN_USER)
 

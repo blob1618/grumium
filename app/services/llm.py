@@ -226,6 +226,14 @@ class LLMService:
             except (TypeError, ValueError):
                 limit_year = None
 
+            limit_currency = parsed.get("limit_currency")
+            if limit_currency is not None:
+                limit_currency = str(limit_currency).strip().upper() or None
+                if limit_currency is not None and (
+                    len(limit_currency) != 3 or not limit_currency.isalpha()
+                ):
+                    limit_currency = None
+
             raw_movements = parsed.get("movements")
             if isinstance(raw_movements, list) and raw_movements:
                 movements = [cls._normalize_single(m, base=parsed) for m in raw_movements]
@@ -254,6 +262,7 @@ class LLMService:
                 "limit_amount": limit_amount,
                 "limit_month": limit_month,
                 "limit_year": limit_year,
+                "limit_currency": limit_currency,
                 "reply_text": str(parsed.get("reply_text") or ""),
                 "movements": movements,
             }
@@ -279,6 +288,7 @@ class LLMService:
                 "limit_amount": None,
                 "limit_month": None,
                 "limit_year": None,
+                "limit_currency": None,
                 "reply_text": (
                     "No he podido analizar tu mensaje en este momento. "
                     "¿Podés reformularlo e intentar de nuevo?"

@@ -8,6 +8,8 @@ Arquitectura actual del backend de LUKA después de STK-35 y límites conocidos 
 - FastAPI: recibe webhooks, extrae los datos del mensaje y orquesta el flujo.
 - `LLMService`: interpreta texto en lenguaje natural y normaliza el resultado estructurado.
 - `FinanceService`: valida reglas de negocio, resuelve usuario y categoría y persiste movimientos.
+- `LimitService`: crea, edita, lista y elimina límites mensuales por categoría y moneda.
+- `BudgetService`: agrega egresos persistidos y calcula consumo, disponible, porcentaje y exceso.
 - PostgreSQL/Supabase: base compartida; `public.movimientos_financieros` es la tabla oficial de movimientos.
 - SQLite: base local por defecto para desarrollo y tests.
 - Redis: disponible para funciones auxiliares, pero no participa actualmente en el registro ni en la deduplicación de STK-35.
@@ -92,6 +94,22 @@ Las categorías default y personalizadas quedan pendientes de trabajo específic
 | `not_a_movement` | No se identificó un movimiento financiero registrable. |
 
 La deduplicación consulta `whatsapp_message_id` antes de insertar y el ORM/migración declaran un índice único parcial. Aun así, la aplicación real de ese índice debe verificarse en Supabase. Cuando Meta reenvía un mensaje ya persistido, no se duplica la fila y el reintento se procesa en silencio: la respuesta visible se suprime porque la confirmación ya se envió en la primera entrega.
+
+## Control de presupuesto (HU-PRE-01 / STK-47)
+
+El flujo de presupuesto es completamente backend-driven:
+
+```text
+Alta/edición de límite -> LimitService -> limite_categoria
+Registro de egreso -> FinanceService -> movimientos_financieros -> BudgetService -> alerta inmediata
+Consulta budget_query -> BudgetService -> respuesta calculada
+```
+
+Las cifras de presupuesto nunca provienen del texto generado por el LLM. El LLM solo clasifica la intención y extrae categoría, mes, año y moneda; el backend identifica al usuario por `whatsapp_id`, consulta datos persistidos y construye la respuesta.
+
+Solo los egresos categorizados de la misma moneda y dentro del período consumen el límite. Al superar el tope, la confirmación del movimiento incluye una alerta con total consumido y exceso. Las consultas pueden pedir una categoría o listar todos los presupuestos del período. Crear un límite sobre una categoría canónica inexistente requiere confirmación explícita antes de crear la categoría.
+
+No se ejecuta un job periódico de alertas: la alerta se evalúa inmediatamente después de una persistencia exitosa. Esto evita duplicados de notificación y mantiene al scheduler reservado para recordatorios.
 
 ## Dashboard, Magic Link y consultas
 

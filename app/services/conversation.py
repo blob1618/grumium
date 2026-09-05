@@ -75,6 +75,7 @@ class PendingLimit:
     amount: Decimal | None
     month: int | None
     year: int | None
+    currency: str = "ARS"
     is_edit: bool = False
     limit_id: str | None = None
 
@@ -102,6 +103,7 @@ class LastCreatedLimit:
     amount: Decimal
     month: int
     year: int
+    currency: str = "ARS"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -119,10 +121,11 @@ class LastCreatedLimit:
 class PendingLimitDelete:
     """Contexto de una eliminación de límite cuando hay que elegir el mes."""
     sender_phone: str
-    category_name: str
+    category_name: str | None
     candidates: list[dict] = field(default_factory=list)
     month: int | None = None
     year: int | None = None
+    currency: str | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -141,7 +144,8 @@ class PendingLimitDelete:
 class ConversationState:
     """Estado de conversación de un usuario."""
     # step puede ser: "none" | "awaiting_category_confirmation" | "awaiting_reminder_data"
-    #               | "awaiting_limit_year_confirmation" | "awaiting_limit_data"
+    #               | "awaiting_limit_year_confirmation" | "awaiting_limit_category_confirmation"
+    #               | "awaiting_limit_data"
     #               | "awaiting_limit_month_selection" | "awaiting_limit_delete_category"
     step: str
     pending_movement: PendingMovement | None = None
@@ -434,6 +438,12 @@ class ConversationService:
         """El usuario debe confirmar si aplica el límite al año siguiente."""
         state = await cls.get_state(whatsapp_id)
         return state.step == "awaiting_limit_year_confirmation"
+
+    @classmethod
+    async def is_awaiting_limit_category_confirmation(cls, whatsapp_id: str) -> bool:
+        """El usuario debe confirmar la creación de una categoría canónica."""
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_limit_category_confirmation"
 
     @classmethod
     async def is_awaiting_limit_data(cls, whatsapp_id: str) -> bool:
