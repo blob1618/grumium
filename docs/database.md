@@ -46,9 +46,15 @@ La FK PostgreSQL `public.usuario.auth_user_id -> auth.users(id)` existe únicame
 
 `public.limite_categoria` define un presupuesto mensual por usuario, categoría, período y moneda. `cantidad_max` usa `numeric(18,2)`, debe ser positiva y el período debe ser válido. La combinación `(usuario_id, categoria_id, inicio_periodo, moneda)` es única, por lo que un alta repetida actualiza el mismo presupuesto en vez de crear duplicados.
 
+Cuando el usuario propone una categoría inexistente al crear un límite, el backend solicita confirmación y luego crea o reactiva la categoría y persiste el límite en la misma transacción. La taxonomía base normaliza categorías conocidas, pero no funciona como una lista cerrada para los límites personalizados.
+
 El gasto consumido, disponible, exceso y porcentaje no se persisten como columnas derivadas. `BudgetService` los calcula desde los egresos de `public.movimientos_financieros` que coinciden en usuario, categoría, moneda y fecha dentro del período. Los ingresos, movimientos sin categoría, otras monedas y otros períodos no consumen el presupuesto.
 
+Después de registrar un egreso con un límite aplicable, la respuesta informa el valor del límite, el gasto acumulado, el disponible y el porcentaje consumido. `should_alert` queda reservado para distinguir un exceso; no controla si el estado calculado se muestra o no.
+
 La migración `005_presupuesto_control_gasto.sql` agrega moneda, restricciones, unicidad e índices para límites y para la agregación de egresos. También habilita RLS en `limite_categoria` sin otorgar acceso a roles públicos. Su presencia en el repositorio no demuestra que esté aplicada en Supabase.
+
+La migración `006_categorias_usuario_nombre_unico.sql` agrega un índice único parcial para impedir dos categorías activas con el mismo nombre normalizado dentro de un usuario. Antes de crear el índice audita duplicados y aborta con un error explícito si encuentra datos que requieran reconciliación.
 
 
 ## Modelos actuales del backend
@@ -139,7 +145,9 @@ El alta, register, login y vinculación inicial de usuarios no forman parte de S
 
 ## Deduplicación e índices
 
-El backend consulta `whatsapp_message_id` antes de insertar. Si ya existe, devuelve `duplicate` y evita una segunda fila. Cuando Meta reenvía un mensaje ya persistido, el reintento se procesa en silencio: se suprime la respuesta visible porque la confirmación ya se envió en la primera entrega.
+Todo mensaje de texto entrante se reclama atómicamente en Redis por su `message_id` antes de ejecutar onboarding, LLM o servicios de dominio. Un reintento concurrente se reconoce como `duplicate` y devuelve HTTP 200 sin volver a procesar ni responder. La marca `processing` vence para permitir recuperación ante una caída; al completar el envío se conserva una marca `completed` durante 48 horas.
+
+Además, el backend consulta `whatsapp_message_id` antes de insertar un movimiento. Si ya existe, devuelve `duplicate` y evita una segunda fila. Esta restricción de base se conserva como defensa adicional para los movimientos, aunque el reclamo global de Redis ya protege saludos, límites, categorías, recordatorios y consultas.
 
 La migración versionada `database/migrations/001_mvp_movimientos_financieros.sql` y el ORM declaran un índice único parcial sobre `movimientos_financieros.whatsapp_message_id`. La migración también declara índices para búsqueda de usuario y consultas de movimientos.
 
@@ -148,13 +156,13 @@ Esto define el contrato esperado, pero no prueba el estado productivo. Queda pen
 - El índice de `public.usuario.whatsapp_id`.
 - El índice único parcial real de `public.movimientos_financieros.whatsapp_message_id`.
 - Los índices por usuario, fecha, tipo y categoría necesarios para consultas productivas.
-- Cualquier índice adicional requerido para resolver categorías activas del usuario.
+- El índice parcial `categorias_usuario_nombre_activo_uidx` después de aplicar la migración 006.
 
 Hasta esa verificación, la deduplicación de aplicación reduce duplicados secuenciales, pero la protección robusta ante concurrencia depende del índice único aplicado en la base.
 
 ## Migraciones y desarrollo local
 
-Sí existen migraciones SQL versionadas en GitHub dentro de `database/migrations/`. HU-PRE-01/STK-47 agrega `005_presupuesto_control_gasto.sql` y su rollback controlado. Ninguna migración nueva se considera aplicada por el solo hecho de estar versionada: debe revisarse contra el estado y los roles reales de Supabase antes de ejecutarla.
+Sí existen migraciones SQL versionadas en GitHub dentro de `database/migrations/`. HU-PRE-01/STK-47 agrega `005_presupuesto_control_gasto.sql` y la creación dinámica segura de categorías agrega `006_categorias_usuario_nombre_unico.sql`, ambas con rollback controlado. Ninguna migración nueva se considera aplicada por el solo hecho de estar versionada: debe revisarse contra el estado y los roles reales de Supabase antes de ejecutarla.
 
 Todavía no hay una herramienta formal como Alembic o Supabase CLI configurada como flujo único de aplicación. Por lo tanto:
 
@@ -193,7 +201,7 @@ El micrositio/dashboard y su acceso seguro mediante Magic Link están relacionad
 - Login y Magic Link.
 - Generación, hashing, envío, consumo y revocación funcional de invitaciones.
 - Contenido legal aprobado y flujo de aceptación.
-- Categorías default y administración de categorías personalizadas.
+- Administración completa de categorías default fuera del flujo de límites.
 - Validación de consentimiento y escritura de eventos dentro del flujo de movimientos.
 - Endpoints financieros del dashboard.
 

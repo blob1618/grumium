@@ -207,6 +207,32 @@ class TestCreateLimit:
         categoria = session.query(Categoria).filter_by(nombre="Ropa").one()
         assert categoria.usuario_id == user.id
 
+    def test_create_arbitrary_category_after_confirmation(self, db_context):
+        session = db_context["session"]
+        user = create_user(session)
+
+        pending = LimitService.create_limit(
+            "5491111111111",
+            limit_data(limit_category="Viajes"),
+            today=TODAY,
+        )
+
+        assert pending.status == "needs_category_confirmation"
+        assert pending.category_name == "Viajes"
+        assert session.query(Categoria).count() == 0
+
+        created = LimitService.create_limit(
+            "5491111111111",
+            limit_data(limit_category="Viajes"),
+            today=TODAY,
+            allow_category_creation=True,
+        )
+
+        assert created.status == "created"
+        categoria = session.query(Categoria).filter_by(nombre="Viajes").one()
+        assert categoria.usuario_id == user.id
+        assert session.query(LimiteCategoria).filter_by(categoria_id=categoria.id).count() == 1
+
     def test_create_case_and_whitespace_insensitive_category(self, db_context):
         session = db_context["session"]
         user = create_user(session)

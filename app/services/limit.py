@@ -1,4 +1,5 @@
 import calendar
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -7,7 +8,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.models.database import Categoria, LimiteCategoria, SessionLocal, Usuario
 from app.services.categories_taxonomy import resolve_category_for_user
@@ -62,6 +63,18 @@ class LimitService:
         if not text:
             return None
         return text[:max_length]
+
+    @staticmethod
+    def _normalize_category_name(value: Any) -> str | None:
+        """Normaliza un nombre visible sin limitarlo a la taxonomía base."""
+        if value is None:
+            return None
+        text = re.sub(r"\s+", " ", str(value)).strip(" \t\r\n.,;:!?¡¿")
+        if not text or len(text) > 100 or not any(char.isalpha() for char in text):
+            return None
+        if any(ord(char) < 32 for char in text):
+            return None
+        return text
 
     @staticmethod
     def _normalize_amount(value: Any) -> Decimal | None:
@@ -176,25 +189,28 @@ class LimitService:
         *,
         allow_creation: bool,
     ) -> tuple[Categoria | None, str, str | None]:
+        requested = cls._normalize_category_name(category_name)
+        if requested is None:
+            return None, category_name, "invalid_category"
+
         resolved = resolve_category_for_user(
-            category_name,
+            requested,
             cls._active_category_names(session, user_id),
         )
-        if resolved is None:
-            return None, category_name, "invalid_category"
-        category = cls._find_category(session, user_id, resolved)
+        proposed_name = resolved or requested
+        category = cls._find_category(session, user_id, proposed_name)
         if category is not None:
             return category, category.nombre, None
         if not allow_creation:
-            return None, resolved, "needs_category_confirmation"
+            return None, proposed_name, "needs_category_confirmation"
 
-        deleted = cls._find_category(session, user_id, resolved, active=False)
+        deleted = cls._find_category(session, user_id, proposed_name, active=False)
         if deleted is not None:
             deleted.esta_eliminado = False
             return deleted, deleted.nombre, None
         category = Categoria(
             usuario_id=user_id,
-            nombre=resolved,
+            nombre=proposed_name,
             es_default=False,
             esta_eliminado=False,
         )
@@ -298,6 +314,7 @@ class LimitService:
         last_limit=None,
         today: date | None = None,
         allow_category_creation: bool = False,
+        _retry_on_category_conflict: bool = True,
     ) -> LimitResult:
         """Crea o actualiza (upsert) el límite mensual de una categoría.
 
@@ -532,6 +549,28 @@ class LimitService:
                 year=resolved_year,
                 currency=currency,
             )
+
+        except IntegrityError as exc:
+            session.rollback()
+            if allow_category_creation and _retry_on_category_conflict:
+                print(
+                    "[LIMIT_CATEGORY] Concurrent category creation detected; retrying "
+                    f"category={category}"
+                )
+                session.close()
+                return cls.create_limit(
+                    sender_phone,
+                    data,
+                    last_limit=last_limit,
+                    today=today,
+                    allow_category_creation=allow_category_creation,
+                    _retry_on_category_conflict=False,
+                )
+            print(
+                "[LIMIT_CREATION] Persistence integrity error: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return cls._result("persistence_error", "could not persist limit")
 
         except SQLAlchemyError as exc:
             session.rollback()

@@ -1,8 +1,10 @@
 """Tests del dispatcher para límites de gasto por categoría (STK-46)."""
 
 from contextlib import contextmanager
+from datetime import datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -10,6 +12,9 @@ from app.services.conversation import LastCreatedLimit, PendingLimit, PendingLim
 from app.services.dispatcher import process_incoming_message
 from app.services.limit import LimitResult
 from app.services.onboarding import OnboardingDecision, OnboardingResult
+
+
+ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
 
 def known_user():
@@ -1105,6 +1110,87 @@ class TestLimitCategoryConfirmation:
         assert create_limit.call_args.kwargs["allow_category_creation"] is True
 
     @pytest.mark.asyncio
+    async def test_creala_authorizes_dynamic_category_creation(self):
+        pending = PendingLimit(
+            sender_phone="12345",
+            category="Viajes",
+            amount=Decimal("10000"),
+            month=9,
+            year=2026,
+            currency="ARS",
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_category=True,
+                llm={"intent": "out_of_scope", "reply_text": ""},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                return_value=created_result(
+                    category_name="Viajes",
+                    amount=Decimal("10000"),
+                    month=9,
+                ),
+            ) as create_limit,
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_limit",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message("12345", "creala")
+
+        assert "Registré tu límite" in result.reply_text
+        assert create_limit.call_args.kwargs["allow_category_creation"] is True
+
+    @pytest.mark.asyncio
+    async def test_alternative_category_keeps_pending_limit_data(self):
+        pending = PendingLimit(
+            sender_phone="12345",
+            category="Viajes",
+            amount=Decimal("10000"),
+            month=9,
+            year=2026,
+            currency="ARS",
+        )
+        with (
+            limit_flow_patches(
+                awaiting_limit_category=True,
+                llm={"intent": "out_of_scope", "reply_text": ""},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                return_value=created_result(
+                    category_name="Vacaciones",
+                    amount=Decimal("10000"),
+                    month=9,
+                ),
+            ) as create_limit,
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_limit",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "mejor usa vacaciones",
+            )
+
+        assert "Vacaciones" in result.reply_text
+        passed_data = create_limit.call_args.args[1]
+        assert passed_data["limit_category"].casefold() == "vacaciones"
+        assert passed_data["limit_amount"] == 10000.0
+
+    @pytest.mark.asyncio
     async def test_unrelated_message_falls_through_with_one_llm_call(self):
         pending = PendingLimit(
             sender_phone="12345",
@@ -1173,3 +1259,82 @@ class TestLimitCategoryConfirmation:
         assert result.service_invoked == "llm"
         mocks["llm"].assert_awaited_once()
         mock_clear.assert_not_awaited()
+
+
+class TestLimitIntentCorrections:
+    @pytest.mark.asyncio
+    async def test_plain_limites_routes_to_list_even_if_llm_misses(self):
+        with (
+            limit_flow_patches(
+                llm={"intent": "out_of_scope", "reply_text": "ayuda"},
+            ),
+            patch(
+                "app.services.dispatcher._handle_list_limits",
+                new_callable=AsyncMock,
+                return_value="lista",
+            ) as list_limits,
+        ):
+            result = await process_incoming_message("12345", "límites")
+
+        assert result.reply_text == "lista"
+        list_limits.assert_awaited_once_with("12345")
+
+    @pytest.mark.asyncio
+    async def test_limit_status_routes_to_budget_even_if_llm_lists(self):
+        with (
+            limit_flow_patches(
+                llm={"intent": "list_limits", "reply_text": "lista"},
+            ),
+            patch(
+                "app.services.dispatcher._handle_budget_query",
+                new_callable=AsyncMock,
+                return_value="estado",
+            ) as budget_query,
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "muéstrame el estado de mis límites",
+            )
+
+        assert result.reply_text == "estado"
+        budget_query.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_current_month_phrase_routes_to_recent_limit_change(self):
+        last_limit = LastCreatedLimit(
+            limit_id="abc-123",
+            sender_phone="12345",
+            category_name="Comida",
+            amount=Decimal("40000"),
+            month=10,
+            year=2026,
+            currency="ARS",
+        )
+        with (
+            limit_flow_patches(
+                llm={
+                    "intent": "create_limit",
+                    "limit_month": None,
+                    "limit_year": None,
+                    "reply_text": "",
+                },
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_last_limit",
+                new_callable=AsyncMock,
+                return_value=last_limit,
+            ),
+            patch(
+                "app.services.dispatcher._handle_change_limit",
+                new_callable=AsyncMock,
+                return_value="actualizado",
+            ) as change_limit,
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "que sea para el mes actual",
+            )
+
+        assert result.reply_text == "actualizado"
+        changed_data = change_limit.await_args.args[1]
+        assert changed_data["limit_month"] == datetime.now(ARGENTINA_TZ).month

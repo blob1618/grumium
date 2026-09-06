@@ -19,6 +19,7 @@ from app.models.database import (
     OnboardingInvitacion,
     Usuario,
 )
+from app.services.webhook_idempotency import InboundMessageClaim
 
 
 client = TestClient(app)
@@ -40,6 +41,19 @@ def no_pending_conversation_flows(monkeypatch):
             f"app.services.dispatcher.ConversationService.{method}",
             AsyncMock(return_value=False),
         )
+    claim = InboundMessageClaim("wamid.test", "whatsapp:inbound:test", "token")
+    monkeypatch.setattr(
+        "app.services.webhook_idempotency.WebhookIdempotencyService.claim",
+        AsyncMock(return_value=claim),
+    )
+    monkeypatch.setattr(
+        "app.services.webhook_idempotency.WebhookIdempotencyService.complete",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.services.webhook_idempotency.WebhookIdempotencyService.release",
+        AsyncMock(return_value=True),
+    )
 
 
 @pytest.fixture()

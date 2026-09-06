@@ -12,6 +12,10 @@ load_dotenv()
 from app.api.whatsapp import send_whatsapp_message  # noqa: E402
 from app.scheduler import start_scheduler  # noqa: E402
 from app.services.dispatcher import process_incoming_message  # noqa: E402
+from app.services.webhook_idempotency import (  # noqa: E402
+    IdempotencyUnavailable,
+    process_text_message_once,
+)
 
 # Cliente Redis global
 redis_client = None
@@ -129,13 +133,25 @@ async def handle_webhook(request: Request):
                     whatsapp_message_id = message.get("id")
                     text_body = message.get("text", {}).get("body", "")
 
-                    result = await process_incoming_message(
-                        sender_phone=sender_phone,
-                        text_body=text_body,
-                        whatsapp_message_id=whatsapp_message_id,
-                    )
-
-                    if result.reply_text:
-                        await send_whatsapp_message(sender_phone, result.reply_text)
+                    try:
+                        await process_text_message_once(
+                            redis_client=redis_client,
+                            sender_phone=sender_phone,
+                            text_body=text_body,
+                            whatsapp_message_id=whatsapp_message_id,
+                            process_message=process_incoming_message,
+                            send_message=send_whatsapp_message,
+                        )
+                    except IdempotencyUnavailable as exc:
+                        print(
+                            "[INBOUND_MESSAGE]",
+                            f"message_id={whatsapp_message_id}",
+                            "status=idempotency_unavailable",
+                            f"error={type(exc).__name__}",
+                        )
+                        raise HTTPException(
+                            status_code=503,
+                            detail="Inbound message processing temporarily unavailable",
+                        ) from exc
 
     return {"status": "ok"}

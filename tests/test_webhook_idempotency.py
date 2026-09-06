@@ -1,0 +1,100 @@
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.services.webhook_idempotency import (
+    WebhookIdempotencyService,
+    process_text_message_once,
+)
+
+
+class FakeRedis:
+    def __init__(self):
+        self.values = {}
+
+    async def set(self, key, value, *, nx=False, ex=None):
+        del ex
+        if nx and key in self.values:
+            return None
+        self.values[key] = value
+        return True
+
+    async def eval(self, script, _number_of_keys, key, expected, *args):
+        if self.values.get(key) != expected:
+            return 0
+        if "'completed'" in script:
+            del args
+            self.values[key] = "completed"
+            return 1
+        del self.values[key]
+        return 1
+
+
+@pytest.mark.asyncio
+async def test_claim_is_atomic_for_same_message_id():
+    redis = FakeRedis()
+    first = await WebhookIdempotencyService.claim(redis, "wamid.1")
+    second = await WebhookIdempotencyService.claim(redis, "wamid.1")
+
+    assert first is not None
+    assert second is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_duplicate_is_processed_and_sent_once():
+    redis = FakeRedis()
+    started = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def process_message(**_kwargs):
+        started.set()
+        await resume.wait()
+        return SimpleNamespace(reply_text="hola")
+
+    send_message = AsyncMock(return_value=True)
+    first = asyncio.create_task(
+        process_text_message_once(
+            redis_client=redis,
+            sender_phone="5491111111111",
+            text_body="hola",
+            whatsapp_message_id="wamid.cold-start",
+            process_message=process_message,
+            send_message=send_message,
+        )
+    )
+    await started.wait()
+
+    duplicate = await process_text_message_once(
+        redis_client=redis,
+        sender_phone="5491111111111",
+        text_body="hola",
+        whatsapp_message_id="wamid.cold-start",
+        process_message=process_message,
+        send_message=send_message,
+    )
+    resume.set()
+
+    assert duplicate == "duplicate"
+    assert await first == "completed"
+    send_message.assert_awaited_once_with("5491111111111", "hola")
+
+
+@pytest.mark.asyncio
+async def test_failed_send_releases_claim_for_retry():
+    redis = FakeRedis()
+    process_message = AsyncMock(return_value=SimpleNamespace(reply_text="hola"))
+
+    with pytest.raises(RuntimeError, match="could not be sent"):
+        await process_text_message_once(
+            redis_client=redis,
+            sender_phone="5491111111111",
+            text_body="hola",
+            whatsapp_message_id="wamid.retry",
+            process_message=process_message,
+            send_message=AsyncMock(return_value=False),
+        )
+
+    retry = await WebhookIdempotencyService.claim(redis, "wamid.retry")
+    assert retry is not None

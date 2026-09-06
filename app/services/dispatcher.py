@@ -27,6 +27,7 @@ from app.services.conversation import (
 from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService
 from app.services.finance import FinanceService, MovementRegistrationResult
+from app.services.intent_routing import normalize_limit_intent, references_recent_limit
 from app.services.limit import LimitService
 from app.services.llm import LLMService
 from app.services.llm_contract import resolve_relative_date
@@ -492,8 +493,8 @@ async def _handle_change_category(sender_phone: str, extracted_data: dict) -> st
             BudgetService.evaluate_movement,
             result.movement_id,
         )
-        alert = _budget_alert_reply(evaluation)
-        return f"{reply}\n\n{alert}" if alert else reply
+        budget_feedback = _budget_feedback_reply(evaluation)
+        return f"{reply}\n\n{budget_feedback}" if budget_feedback else reply
     elif result.status == "not_found":
         return "No encontré el movimiento para cambiarle la categoría."
     elif result.status == "category_not_found":
@@ -634,8 +635,8 @@ async def _register_single_with_hint(
         BudgetService.evaluate_movement,
         result.movement_id,
     )
-    alert = _budget_alert_reply(evaluation)
-    return f"{reply}\n\n{alert}" if alert else reply
+    budget_feedback = _budget_feedback_reply(evaluation)
+    return f"{reply}\n\n{budget_feedback}" if budget_feedback else reply
 
 
 async def _route_needs_category_confirmation(
@@ -697,9 +698,9 @@ async def _register_multiop(
             BudgetService.evaluate_movements,
             registered_ids,
         )
-        alerts = _unique_budget_alerts(evaluations)
-        if alerts:
-            reply = f"{reply}\n\n" + "\n\n".join(alerts)
+        budget_feedback = _unique_budget_feedback(evaluations)
+        if budget_feedback:
+            reply = f"{reply}\n\n" + "\n\n".join(budget_feedback)
     return reply
 
 
@@ -740,15 +741,22 @@ def _budget_status_reply(status: BudgetStatus) -> str:
     limit = _format_limit_amount(status.limit_amount)
     if status.state == "exceeded":
         exceeded = _format_limit_amount(status.exceeded_amount)
+        remaining = _format_limit_amount(status.remaining_amount)
         return (
             f"⚠️ *{status.category_name} — {label}*\n"
             f"Gastaste ${spent} {status.currency} de ${limit} {status.currency}.\n"
+            f"Te quedan ${remaining} {status.currency} "
+            f"({status.percentage}% usado).\n"
             f"Superaste el límite en ${exceeded} {status.currency}."
         )
     if status.state == "reached":
+        remaining = _format_limit_amount(status.remaining_amount)
         return (
             f"🎯 *{status.category_name} — {label}*\n"
-            f"Alcanzaste tu límite de ${limit} {status.currency}."
+            f"Gastaste ${spent} {status.currency} de ${limit} {status.currency}.\n"
+            f"Te quedan ${remaining} {status.currency} "
+            f"({status.percentage}% usado).\n"
+            "Alcanzaste tu límite."
         )
     remaining = _format_limit_amount(status.remaining_amount)
     return (
@@ -758,23 +766,40 @@ def _budget_status_reply(status: BudgetStatus) -> str:
     )
 
 
-def _budget_alert_reply(evaluation: BudgetEvaluation) -> str:
-    if not evaluation.should_alert or evaluation.budget is None:
+def _budget_feedback_reply(evaluation: BudgetEvaluation) -> str:
+    """Devuelve el estado de un límite aplicable, haya exceso o no."""
+    budget = evaluation.budget
+    print(
+        "[BUDGET_EVALUATION]",
+        f"movement_id={evaluation.movement_id}",
+        f"status={evaluation.status}",
+        f"has_limit={evaluation.has_limit}",
+        f"limit_id={budget.limit_id if budget is not None else None}",
+        f"state={budget.state if budget is not None else None}",
+        f"percentage={budget.percentage if budget is not None else None}",
+        f"should_alert={evaluation.should_alert}",
+    )
+    if (
+        evaluation.status != "ok"
+        or not evaluation.has_limit
+        or budget is None
+    ):
         return ""
-    return _budget_status_reply(evaluation.budget)
+    return _budget_status_reply(budget)
 
 
-def _unique_budget_alerts(evaluations: list[BudgetEvaluation]) -> list[str]:
-    alerts: list[str] = []
+def _unique_budget_feedback(evaluations: list[BudgetEvaluation]) -> list[str]:
+    feedback: list[str] = []
     seen: set[str] = set()
     for evaluation in evaluations:
-        if not evaluation.should_alert or evaluation.budget is None:
+        rendered = _budget_feedback_reply(evaluation)
+        if not rendered or evaluation.budget is None:
             continue
         if evaluation.budget.limit_id in seen:
             continue
         seen.add(evaluation.budget.limit_id)
-        alerts.append(_budget_status_reply(evaluation.budget))
-    return alerts
+        feedback.append(rendered)
+    return feedback
 
 
 def _limit_registered_reply(
@@ -891,6 +916,18 @@ _CONFIRM_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_CATEGORY_CREATION_CONFIRM_PATTERNS = re.compile(
+    r"\b(?:cre(?:a|á)la|cre(?:a|á)\s+(?:esa|la)\s+categor[ií]a|"
+    r"us(?:a|á)la|agreg(?:a|á)la)\b",
+    re.IGNORECASE,
+)
+
+_CATEGORY_ALTERNATIVE_PATTERN = re.compile(
+    r"^(?:mejor\s+)?(?:us(?:a|á)|utiliz(?:a|á)|pon(?:e|é))\s+"
+    r"(?:(?:la|otra)\s+categor[ií]a\s+)?(?P<category>[\wáéíóúüñ\s-]{1,100})$",
+    re.IGNORECASE,
+)
+
 
 def _is_confirm_request(text: str) -> bool:
     """Detecta una respuesta afirmativa clara (sí/dale/ok) al confirmar un límite.
@@ -901,6 +938,23 @@ def _is_confirm_request(text: str) -> bool:
     if not text:
         return False
     return _CONFIRM_PATTERNS.search(text) is not None
+
+
+def _is_category_creation_confirmation(text: str) -> bool:
+    if not text:
+        return False
+    return (
+        _is_confirm_request(text)
+        or _CATEGORY_CREATION_CONFIRM_PATTERNS.search(text) is not None
+    )
+
+
+def _extract_category_alternative(text: str) -> str | None:
+    match = _CATEGORY_ALTERNATIVE_PATTERN.match(text.strip()) if text else None
+    if match is None:
+        return None
+    category = match.group("category").strip(" .,!?:;¡¿")
+    return category or None
 
 
 def _extract_amount_from_text(text: str) -> float | None:
@@ -1320,13 +1374,36 @@ async def process_incoming_message(
     # dispatcher general. Memorizar la clasificación garantiza que ese
     # fall-through no vuelva a facturar ni reintentar el mismo mensaje.
     llm_result_cache: dict | None = None
+    last_limit_cache: LastCreatedLimit | None = None
+    last_limit_loaded = False
+
+    async def get_last_limit_once() -> LastCreatedLimit | None:
+        nonlocal last_limit_cache, last_limit_loaded
+        if not last_limit_loaded:
+            last_limit_cache = await ConversationService.get_last_limit(sender_phone)
+            last_limit_loaded = True
+        return last_limit_cache
 
     async def extract_message_once() -> dict:
         nonlocal llm_result_cache
         if llm_result_cache is None:
+            context = build_user_context(sender_phone)
+            recent_limit = (
+                await get_last_limit_once()
+                if references_recent_limit(text_body)
+                else None
+            )
+            if recent_limit is not None:
+                context += (
+                    "\nÚLTIMO LÍMITE CREADO: "
+                    f"categoría={recent_limit.category_name}; "
+                    f"monto={recent_limit.amount}; "
+                    f"mes={recent_limit.month}; año={recent_limit.year}; "
+                    f"moneda={recent_limit.currency}."
+                )
             llm_result_cache = await LLMService.process_message(
                 text_body,
-                context=build_user_context(sender_phone),
+                context=context,
             )
         return llm_result_cache
 
@@ -1477,7 +1554,9 @@ async def process_incoming_message(
                 reply_text="Listo, no creé la categoría ni el límite.",
                 service_invoked="conversation",
             )
-        if intent == "confirm_limit" or _is_confirm_request(text_body):
+        if intent in {"confirm_limit", "confirm_category"} or (
+            _is_category_creation_confirmation(text_body)
+        ):
             reply_text = await _handle_create_limit(
                 sender_phone,
                 _limit_base_data(pending),
@@ -1486,6 +1565,28 @@ async def process_incoming_message(
                 allow_category_creation=True,
             )
             return DispatchResult(reply_text=reply_text, service_invoked="conversation")
+        alternative_category = (
+            extracted_data.get("limit_category")
+            or _extract_category_alternative(text_body)
+        )
+        if (
+            isinstance(alternative_category, str)
+            and alternative_category.strip()
+            and alternative_category.strip().casefold()
+            != (pending.category or "").strip().casefold()
+        ):
+            replacement_data = _limit_base_data(pending)
+            replacement_data["limit_category"] = alternative_category.strip()
+            reply_text = await _handle_create_limit(
+                sender_phone,
+                replacement_data,
+                last_limit=_last_limit_from_pending(pending),
+                edit=pending.is_edit,
+            )
+            return DispatchResult(
+                reply_text=reply_text,
+                service_invoked="conversation",
+            )
         await ConversationService.clear_state(sender_phone)
 
     # ----------------------------------------------------------
@@ -1644,6 +1745,15 @@ async def process_incoming_message(
 
     # Procesar mensaje con LLM (fecha + categorías del usuario como contexto)
     extracted_data = await extract_message_once()
+    last_limit_for_routing = None
+    if references_recent_limit(text_body):
+        last_limit_for_routing = await get_last_limit_once()
+    extracted_data = normalize_limit_intent(
+        text_body,
+        extracted_data,
+        last_limit=last_limit_for_routing,
+        today=datetime.now(ARGENTINA_TZ).date(),
+    )
     intent = extracted_data.get("intent", "out_of_scope")
 
     # ----------------------------------------------------------

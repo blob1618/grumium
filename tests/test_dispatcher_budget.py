@@ -192,3 +192,74 @@ async def test_registered_expense_appends_excess_alert():
 
     assert "Registré tu egreso" in reply
     assert "Superaste el límite en $200,00 ARS" in reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (
+            budget_status(
+                spent="800",
+                remaining="200",
+                percentage="80.0",
+                state="available",
+            ),
+            "Te quedan $200,00 ARS (80.0% usado)",
+        ),
+        (
+            budget_status(
+                spent="1000",
+                remaining="0",
+                percentage="100.0",
+                state="reached",
+            ),
+            "Te quedan $0,00 ARS (100.0% usado)",
+        ),
+    ],
+)
+async def test_registered_expense_always_appends_matching_budget_status(status, expected):
+    movement_id = str(uuid.uuid4())
+    movement = {
+        "intent": "expense",
+        "movement_type": "egreso",
+        "amount": 800,
+        "currency": "ARS",
+        "description": "supermercado",
+        "category": "Comida",
+    }
+    with (
+        patch(
+            "app.services.dispatcher.FinanceService.register_movement_with_category",
+            return_value=MovementRegistrationResult(
+                status="registered",
+                message="ok",
+                movement_id=movement_id,
+                user_id=str(uuid.uuid4()),
+            ),
+        ),
+        patch(
+            "app.services.dispatcher.BudgetService.evaluate_movement",
+            return_value=BudgetEvaluation(
+                status="ok",
+                message="evaluated",
+                movement_id=movement_id,
+                has_limit=True,
+                should_alert=False,
+                budget=status,
+            ),
+        ),
+        patch(
+            "app.services.dispatcher.ConversationService.set_last_movement",
+            new_callable=AsyncMock,
+        ),
+    ):
+        reply = await _register_single_with_hint(
+            "5491111111111",
+            "wamid.status",
+            "gasté en supermercado",
+            movement,
+            movement,
+        )
+
+    assert expected in reply

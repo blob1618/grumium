@@ -250,6 +250,17 @@ class Categoria(Base):
     esta_eliminado = Column(Boolean, default=False)
     creado_en = Column(DateTime, default=datetime.utcnow)
 
+    __table_args__ = (
+        Index(
+            "categorias_usuario_nombre_activo_uidx",
+            "usuario_id",
+            func.lower(func.trim(nombre)),
+            unique=True,
+            postgresql_where=esta_eliminado.is_(False),
+            sqlite_where=esta_eliminado.is_(False),
+        ),
+    )
+
 class LimiteCategoria(Base):
     __tablename__ = "limite_categoria"
 

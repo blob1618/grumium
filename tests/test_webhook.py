@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.services.finance import MovementRegistrationResult
 from app.services.onboarding import OnboardingDecision, OnboardingResult, OnboardingService
+from app.services.webhook_idempotency import InboundMessageClaim
 
 
 client = TestClient(app)
@@ -27,6 +28,19 @@ def no_pending_conversation_flows(monkeypatch):
             f"app.services.dispatcher.ConversationService.{method}",
             AsyncMock(return_value=False),
         )
+    claim = InboundMessageClaim("wamid.test", "whatsapp:inbound:test", "token")
+    monkeypatch.setattr(
+        "app.services.webhook_idempotency.WebhookIdempotencyService.claim",
+        AsyncMock(return_value=claim),
+    )
+    monkeypatch.setattr(
+        "app.services.webhook_idempotency.WebhookIdempotencyService.complete",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.services.webhook_idempotency.WebhookIdempotencyService.release",
+        AsyncMock(return_value=True),
+    )
 
 
 def make_text_message(body="Gaste 5000 en supermercado"):
@@ -214,6 +228,24 @@ def test_handle_webhook_duplicate_movement_is_silent():
 
     assert response.status_code == 200
     register_movement.assert_called_once()
+    send_message.assert_not_awaited()
+
+
+def test_handle_webhook_duplicate_message_is_suppressed_before_dispatch():
+    payload = make_webhook_payload(messages=[make_text_message(body="hola")])
+    with (
+        patch(
+            "app.services.webhook_idempotency.WebhookIdempotencyService.claim",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("app.main.process_incoming_message", new_callable=AsyncMock) as process_message,
+        patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
+    ):
+        response = client.post("/webhook", json=payload)
+
+    assert response.status_code == 200
+    process_message.assert_not_awaited()
     send_message.assert_not_awaited()
 
 

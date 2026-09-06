@@ -1,0 +1,154 @@
+"""Atomic idempotency for inbound WhatsApp messages."""
+
+import hashlib
+import secrets
+from dataclasses import dataclass
+from typing import Any
+
+
+PROCESSING_TTL_SECONDS = 15 * 60
+COMPLETED_TTL_SECONDS = 48 * 60 * 60
+
+
+class IdempotencyUnavailable(RuntimeError):
+    """Raised when an inbound message cannot be claimed safely."""
+
+
+@dataclass(frozen=True)
+class InboundMessageClaim:
+    message_id: str
+    key: str
+    token: str
+
+    @property
+    def processing_value(self) -> str:
+        return f"processing:{self.token}"
+
+
+class WebhookIdempotencyService:
+    @staticmethod
+    def _key(message_id: str) -> str:
+        digest = hashlib.sha256(message_id.encode("utf-8")).hexdigest()
+        return f"whatsapp:inbound:{digest}"
+
+    @classmethod
+    async def claim(cls, client: Any, message_id: str) -> InboundMessageClaim | None:
+        if client is None:
+            raise IdempotencyUnavailable("Redis client is not initialized")
+        normalized_id = str(message_id or "").strip()
+        if not normalized_id:
+            raise IdempotencyUnavailable("WhatsApp message ID is required")
+
+        claim = InboundMessageClaim(
+            message_id=normalized_id,
+            key=cls._key(normalized_id),
+            token=secrets.token_urlsafe(18),
+        )
+        try:
+            acquired = await client.set(
+                claim.key,
+                claim.processing_value,
+                nx=True,
+                ex=PROCESSING_TTL_SECONDS,
+            )
+        except Exception as exc:
+            raise IdempotencyUnavailable("Could not claim inbound message") from exc
+        return claim if acquired else None
+
+    @staticmethod
+    async def complete(client: Any, claim: InboundMessageClaim) -> bool:
+        script = """
+        if redis.call('GET', KEYS[1]) == ARGV[1] then
+            redis.call('SET', KEYS[1], 'completed', 'EX', ARGV[2])
+            return 1
+        end
+        return 0
+        """
+        try:
+            result = await client.eval(
+                script,
+                1,
+                claim.key,
+                claim.processing_value,
+                COMPLETED_TTL_SECONDS,
+            )
+        except Exception as exc:
+            raise IdempotencyUnavailable("Could not complete inbound message") from exc
+        return bool(result)
+
+    @staticmethod
+    async def release(client: Any, claim: InboundMessageClaim) -> bool:
+        script = """
+        if redis.call('GET', KEYS[1]) == ARGV[1] then
+            return redis.call('DEL', KEYS[1])
+        end
+        return 0
+        """
+        try:
+            result = await client.eval(
+                script,
+                1,
+                claim.key,
+                claim.processing_value,
+            )
+        except Exception as exc:
+            raise IdempotencyUnavailable("Could not release inbound message") from exc
+        return bool(result)
+
+
+async def process_text_message_once(
+    *,
+    redis_client: Any,
+    sender_phone: str,
+    text_body: str,
+    whatsapp_message_id: str,
+    process_message,
+    send_message,
+) -> str:
+    """Claim, process and reply to one message at most once."""
+    claim = await WebhookIdempotencyService.claim(redis_client, whatsapp_message_id)
+    if claim is None:
+        print(
+            "[INBOUND_MESSAGE]",
+            f"message_id={whatsapp_message_id}",
+            "status=duplicate",
+        )
+        return "duplicate"
+
+    print(
+        "[INBOUND_MESSAGE]",
+        f"message_id={whatsapp_message_id}",
+        "status=claimed",
+    )
+    send_succeeded = False
+    try:
+        result = await process_message(
+            sender_phone=sender_phone,
+            text_body=text_body,
+            whatsapp_message_id=whatsapp_message_id,
+        )
+        if result.reply_text:
+            send_result = await send_message(sender_phone, result.reply_text)
+            send_succeeded = send_result is not False
+            if send_result is False:
+                raise RuntimeError("WhatsApp reply could not be sent")
+
+        await WebhookIdempotencyService.complete(redis_client, claim)
+        print(
+            "[INBOUND_MESSAGE]",
+            f"message_id={whatsapp_message_id}",
+            "status=completed",
+        )
+        return "completed"
+    except Exception:
+        if not send_succeeded:
+            try:
+                await WebhookIdempotencyService.release(redis_client, claim)
+            except IdempotencyUnavailable as release_error:
+                print(
+                    "[INBOUND_MESSAGE]",
+                    f"message_id={whatsapp_message_id}",
+                    "status=release_failed",
+                    f"error={type(release_error).__name__}",
+                )
+        raise
